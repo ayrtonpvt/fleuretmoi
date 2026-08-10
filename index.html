@@ -46,10 +46,16 @@
         <h2>Identify a plant</h2>
         <p>Add one to five photos of the same plant. A flower close-up usually gives the best result.</p>
       </div>
-      <label class="cameraButton">
-        <input id="photoInput" type="file" accept="image/jpeg,image/png" capture="environment" multiple />
-        <span>＋ Add photos</span>
-      </label>
+      <div class="photoActions" aria-label="Add plant photos">
+        <label class="cameraButton">
+          <input id="cameraInput" type="file" accept="image/jpeg,image/png" capture="environment" />
+          <span>📷 Take photo</span>
+        </label>
+        <label class="galleryButton">
+          <input id="galleryInput" type="file" accept="image/jpeg,image/png" multiple />
+          <span>🖼 Choose from gallery</span>
+        </label>
+      </div>
     </section>
 
     <section id="photoSection" class="card hidden">
