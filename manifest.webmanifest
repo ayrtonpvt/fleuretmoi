@@ -1,7 +1,8 @@
 {
-  "name": "Which Flower?",
-  "short_name": "Which Flower",
-  "description": "Identify plants with Pl@ntNet and keep your observations locally.",
+  "name": "Fleuretmoi",
+  "short_name": "Fleuretmoi",
+  "description": "Herbier personnel et identification de plantes avec Pl@ntNet.",
+  "lang": "fr",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
