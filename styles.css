@@ -50,9 +50,10 @@ h2 { margin-bottom: 8px; font-size: 1.18rem; }
 }
 .hero { display: flex; align-items: center; justify-content: space-between; gap: 22px; }
 .hero p { color: var(--muted); max-width: 45ch; margin-bottom: 0; line-height: 1.5; }
-.cameraButton { flex: 0 0 auto; }
-.cameraButton input { position: absolute; opacity: 0; pointer-events: none; }
-.cameraButton span, .primaryButton {
+.photoActions { display: flex; flex-direction: column; gap: 9px; flex: 0 0 auto; }
+.cameraButton, .galleryButton { flex: 0 0 auto; }
+.cameraButton input, .galleryButton input { position: absolute; opacity: 0; pointer-events: none; }
+.cameraButton span, .galleryButton span, .primaryButton {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -101,8 +102,9 @@ h2 { margin-bottom: 8px; font-size: 1.18rem; }
   .shell { width: min(100% - 20px, 760px); }
   .topbar { align-items: flex-end; }
   .hero { display: block; }
-  .cameraButton span { width: 100%; margin-top: 18px; }
-  .cameraButton { display: block; }
+  .photoActions { margin-top: 18px; }
+  .cameraButton span, .galleryButton span { width: 100%; }
+  .cameraButton, .galleryButton { display: block; }
   .photoGrid { grid-template-columns: 1fr; }
   .card { padding: 17px; border-radius: 18px; }
 }
