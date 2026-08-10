@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#244d36" />
+  <meta name="description" content="Personal plant identification app powered by Pl@ntNet." />
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="icon" href="./icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="./icons/icon-192.png" />
+  <link rel="stylesheet" href="./styles.css" />
+  <title>Which Flower?</title>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">PERSONAL FIELD GUIDE</p>
+        <h1>Which Flower?</h1>
+      </div>
+      <div id="connectionBadge" class="badge">Checking…</div>
+    </header>
+
+    <section id="setupCard" class="card setupCard">
+      <div class="sectionHead">
+        <div>
+          <p class="eyebrow">ONE-TIME SETUP</p>
+          <h2>Pl@ntNet API key</h2>
+          <p class="muted">Saved only in this browser on this device. It is not stored in the GitHub repository.</p>
+        </div>
+        <span id="apiStatus" class="countPill">Not set</span>
+      </div>
+      <div class="keyRow">
+        <input id="apiKeyInput" class="keyInput" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your Pl@ntNet API key" />
+        <button id="saveApiKeyButton" class="secondaryButton" type="button">Save key</button>
+      </div>
+      <div class="originBox">
+        <span class="muted">Browser origin for Pl@ntNet CORS:</span>
+        <code id="originText"></code>
+      </div>
+      <button id="forgetApiKeyButton" class="textButton hidden" type="button">Forget key on this device</button>
+    </section>
+
+    <section class="hero card">
+      <div>
+        <h2>Identify a plant</h2>
+        <p>Add one to five photos of the same plant. A flower close-up usually gives the best result.</p>
+      </div>
+      <label class="cameraButton">
+        <input id="photoInput" type="file" accept="image/jpeg,image/png" capture="environment" multiple />
+        <span>＋ Add photos</span>
+      </label>
+    </section>
+
+    <section id="photoSection" class="card hidden">
+      <div class="sectionHead">
+        <h2>Photos</h2>
+        <span id="photoCount" class="muted"></span>
+      </div>
+      <div id="photoGrid" class="photoGrid"></div>
+      <button id="identifyButton" class="primaryButton">Identify plant</button>
+      <p id="statusText" class="statusText" aria-live="polite"></p>
+    </section>
+
+    <section id="resultSection" class="card hidden">
+      <div class="sectionHead">
+        <div>
+          <p class="eyebrow">BEST MATCH</p>
+          <h2 id="bestCommonName">Result</h2>
+          <p id="bestScientificName" class="scientific"></p>
+        </div>
+        <div id="bestScore" class="scoreRing"></div>
+      </div>
+      <div id="bestMeta" class="metaRow"></div>
+      <div id="alternatives" class="alternatives"></div>
+    </section>
+
+    <section class="card">
+      <div class="sectionHead">
+        <div>
+          <h2>Offline queue</h2>
+          <p class="muted">Photos taken without internet stay on this device until they can be identified.</p>
+        </div>
+        <span id="queueCount" class="countPill">0</span>
+      </div>
+      <div id="queueList" class="compactList emptyState">Nothing waiting.</div>
+    </section>
+
+    <section class="card">
+      <div class="sectionHead">
+        <div>
+          <h2>Recent identifications</h2>
+          <p class="muted">Stored locally in this browser. No database required.</p>
+        </div>
+        <button id="clearHistoryButton" class="textButton">Clear</button>
+      </div>
+      <div id="historyList" class="compactList emptyState">No identifications yet.</div>
+    </section>
+  </main>
+
+  <template id="photoTemplate">
+    <article class="photoCard">
+      <img alt="Selected plant photo" />
+      <div class="photoControls">
+        <select aria-label="Plant organ">
+          <option value="auto">Auto-detect</option>
+          <option value="flower">Flower</option>
+          <option value="leaf">Leaf</option>
+          <option value="fruit">Fruit</option>
+          <option value="bark">Bark</option>
+        </select>
+        <button class="removeButton" type="button">Remove</button>
+      </div>
+    </article>
+  </template>
+
+  <script src="./app.js" defer></script>
+</body>
+</html>
