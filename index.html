@@ -1,121 +1,152 @@
 <!doctype html>
-<html lang="en">
+<html lang="fr">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#244d36" />
-  <meta name="description" content="Personal plant identification app powered by Pl@ntNet." />
+  <meta name="description" content="Fleuretmoi, herbier personnel et identification de plantes avec Pl@ntNet." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="icon" href="./icons/icon-192.png" />
   <link rel="apple-touch-icon" href="./icons/icon-192.png" />
   <link rel="stylesheet" href="./styles.css" />
-  <title>Which Flower?</title>
+  <title>Fleuretmoi</title>
 </head>
 <body>
   <main class="shell">
-    <header class="topbar">
-      <div>
-        <p class="eyebrow">PERSONAL FIELD GUIDE</p>
-        <h1>Which Flower?</h1>
-      </div>
-      <div id="connectionBadge" class="badge">Checking…</div>
-    </header>
-
-    <section id="setupCard" class="card setupCard">
-      <div class="sectionHead">
+    <div id="homeView">
+      <header class="topbar">
         <div>
-          <p class="eyebrow">ONE-TIME SETUP</p>
-          <h2>Pl@ntNet API key</h2>
-          <p class="muted">Saved only in this browser on this device. It is not stored in the GitHub repository.</p>
+          <p class="eyebrow">HERBIER PERSONNEL</p>
+          <h1>Fleuretmoi</h1>
         </div>
-        <span id="apiStatus" class="countPill">Not set</span>
-      </div>
-      <div class="keyRow">
-        <input id="apiKeyInput" class="keyInput" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your Pl@ntNet API key" />
-        <button id="saveApiKeyButton" class="secondaryButton" type="button">Save key</button>
-      </div>
-      <div class="originBox">
-        <span class="muted">Browser origin for Pl@ntNet CORS:</span>
-        <code id="originText"></code>
-      </div>
-      <button id="forgetApiKeyButton" class="textButton hidden" type="button">Forget key on this device</button>
-    </section>
+        <div id="connectionBadge" class="badge">Vérification…</div>
+      </header>
 
-    <section class="hero card">
-      <div>
-        <h2>Identify a plant</h2>
-        <p>Add one to five photos of the same plant. A flower close-up usually gives the best result.</p>
-      </div>
-      <div class="photoActions" aria-label="Add plant photos">
-        <label class="cameraButton">
-          <input id="cameraInput" type="file" accept="image/jpeg,image/png" capture="environment" />
-          <span>📷 Take photo</span>
-        </label>
-        <label class="galleryButton">
-          <input id="galleryInput" type="file" accept="image/jpeg,image/png" multiple />
-          <span>🖼 Choose from gallery</span>
-        </label>
-      </div>
-    </section>
+      <section id="setupCard" class="card setupCard hidden">
+        <div class="sectionHead">
+          <div>
+            <p class="eyebrow">CONFIGURATION INITIALE</p>
+            <h2>Clé API Pl@ntNet</h2>
+            <p class="muted">Enregistrée uniquement dans ce navigateur, sur cet appareil.</p>
+          </div>
+          <span id="apiStatus" class="countPill">Non configurée</span>
+        </div>
+        <div class="keyRow">
+          <input id="apiKeyInput" class="keyInput" type="password" autocomplete="off" spellcheck="false" placeholder="Collez votre clé API Pl@ntNet" />
+          <button id="saveApiKeyButton" class="secondaryButton" type="button">Enregistrer</button>
+        </div>
+        <div class="originBox">
+          <span class="muted">Origine à autoriser dans Pl@ntNet :</span>
+          <code id="originText"></code>
+        </div>
+      </section>
 
-    <section id="photoSection" class="card hidden">
-      <div class="sectionHead">
-        <h2>Photos</h2>
-        <span id="photoCount" class="muted"></span>
-      </div>
-      <div id="photoGrid" class="photoGrid"></div>
-      <button id="identifyButton" class="primaryButton">Identify plant</button>
-      <p id="statusText" class="statusText" aria-live="polite"></p>
-    </section>
-
-    <section id="resultSection" class="card hidden">
-      <div class="sectionHead">
+      <section class="hero card">
         <div>
-          <p class="eyebrow">BEST MATCH</p>
-          <h2 id="bestCommonName">Result</h2>
-          <p id="bestScientificName" class="scientific"></p>
+          <h2>Identifier une plante</h2>
+          <p>Ajoutez une à cinq photos de la même plante. Une vue nette de la fleur donne généralement le meilleur résultat.</p>
         </div>
-        <div id="bestScore" class="scoreRing"></div>
-      </div>
-      <div id="bestMeta" class="metaRow"></div>
-      <div id="alternatives" class="alternatives"></div>
-    </section>
+        <div class="photoActions" aria-label="Ajouter des photos de la plante">
+          <label class="cameraButton">
+            <input id="cameraInput" type="file" accept="image/jpeg,image/png" capture="environment" />
+            <span>Prendre une photo</span>
+          </label>
+          <label class="galleryButton">
+            <input id="galleryInput" type="file" accept="image/jpeg,image/png" multiple />
+            <span>Choisir dans la galerie</span>
+          </label>
+        </div>
+      </section>
 
-    <section class="card">
-      <div class="sectionHead">
-        <div>
-          <h2>Offline queue</h2>
-          <p class="muted">Photos taken without internet stay on this device until they can be identified.</p>
+      <section id="photoSection" class="card hidden">
+        <div class="sectionHead">
+          <h2>Photos</h2>
+          <span id="photoCount" class="muted"></span>
         </div>
-        <span id="queueCount" class="countPill">0</span>
-      </div>
-      <div id="queueList" class="compactList emptyState">Nothing waiting.</div>
-    </section>
+        <div id="photoGrid" class="photoGrid"></div>
+        <button id="identifyButton" class="primaryButton">Identifier la plante</button>
+        <p id="statusText" class="statusText" aria-live="polite"></p>
+      </section>
 
-    <section class="card">
-      <div class="sectionHead">
-        <div>
-          <h2>Recent identifications</h2>
-          <p class="muted">Stored locally in this browser. No database required.</p>
+      <section class="card">
+        <div class="sectionHead">
+          <div>
+            <h2>En attente hors connexion</h2>
+            <p class="muted">Les photos prises sans connexion restent sur cet appareil jusqu’à leur identification.</p>
+          </div>
+          <span id="queueCount" class="countPill">0</span>
         </div>
-        <button id="clearHistoryButton" class="textButton">Clear</button>
-      </div>
-      <div id="historyList" class="compactList emptyState">No identifications yet.</div>
-    </section>
+        <div id="queueList" class="compactList emptyState">Aucune observation en attente.</div>
+      </section>
+
+      <section class="card historyCard">
+        <div class="sectionHead">
+          <div>
+            <h2>Historique</h2>
+            <p class="muted">Vos observations sont conservées localement sur cet appareil.</p>
+          </div>
+          <button id="clearHistoryButton" class="textButton" type="button">Effacer</button>
+        </div>
+        <div id="historyList" class="compactList emptyState">Aucune identification pour le moment.</div>
+      </section>
+    </div>
+
+    <div id="captureView" class="hidden">
+      <header class="detailTopbar">
+        <button id="backButton" class="backButton" type="button" aria-label="Retour à l’herbier">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+          <span>Retour</span>
+        </button>
+        <p class="eyebrow">OBSERVATION</p>
+      </header>
+
+      <section class="card capturePhotosCard">
+        <div class="sectionHead">
+          <div>
+            <h2>Votre plante</h2>
+            <p id="captureDate" class="muted"></p>
+          </div>
+          <span id="verificationLabel" class="verificationPill">Non vérifiée</span>
+        </div>
+        <div id="capturePhotoGrid" class="capturePhotoGrid"></div>
+        <p id="legacyPhotoNote" class="muted hidden">Cette ancienne identification ne contient pas de photo enregistrée.</p>
+      </section>
+
+      <section id="resultSection" class="card resultCard">
+        <div class="sectionHead resultHead">
+          <div>
+            <p class="eyebrow">PROPOSITION</p>
+            <h2 id="bestCommonName">Résultat</h2>
+            <p id="bestScientificName" class="scientific"></p>
+          </div>
+          <button id="bestScore" class="scoreRing" type="button" aria-label="Valider cette identification"></button>
+        </div>
+        <p id="verificationHint" class="verificationHint">Touchez le pourcentage pour confirmer que cette proposition correspond bien à la plante observée.</p>
+        <div id="bestMeta" class="metaRow"></div>
+        <div id="referencePhotoBlock" class="referencePhotoBlock hidden">
+          <p class="referenceLabel">Photo de référence</p>
+          <img id="referencePhoto" alt="Photo de référence de l’espèce proposée" />
+        </div>
+        <div id="alternatives" class="alternatives"></div>
+      </section>
+    </div>
   </main>
 
   <template id="photoTemplate">
     <article class="photoCard">
-      <img alt="Selected plant photo" />
+      <img alt="Photo sélectionnée de la plante" />
       <div class="photoControls">
-        <select aria-label="Plant organ">
-          <option value="auto">Auto-detect</option>
-          <option value="flower">Flower</option>
-          <option value="leaf">Leaf</option>
+        <select aria-label="Partie de la plante">
+          <option value="auto">Détection automatique</option>
+          <option value="flower">Fleur</option>
+          <option value="leaf">Feuille</option>
           <option value="fruit">Fruit</option>
-          <option value="bark">Bark</option>
+          <option value="bark">Écorce</option>
         </select>
-        <button class="removeButton" type="button">Remove</button>
+        <button class="removeButton" type="button">Retirer</button>
       </div>
     </article>
   </template>
