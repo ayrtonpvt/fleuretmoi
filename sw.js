@@ -1,4 +1,4 @@
-const CACHE = "which-flower-pages-v3";
+const CACHE = "fleuretmoi-pages-v4";
 const BASE = new URL("./", self.location.href);
 const APP_SHELL = [
   "",
@@ -28,12 +28,12 @@ self.addEventListener("fetch", (event) => {
   if (requestUrl.origin !== self.location.origin) return;
 
   event.respondWith(
-    caches.match(event.request).then((cached) => cached || fetch(event.request).then((response) => {
+    fetch(event.request).then((response) => {
       if (response.ok) {
         const clone = response.clone();
         caches.open(CACHE).then((cache) => cache.put(event.request, clone));
       }
       return response;
-    }).catch(() => caches.match(new URL("index.html", BASE).href)))
+    }).catch(() => caches.match(event.request).then((cached) => cached || caches.match(new URL("index.html", BASE).href)))
   );
 });
