@@ -9,7 +9,8 @@ const PLANTNET_API_URL = "https://my-api.plantnet.org/v2/identify/all";
 const state = { photos: [] };
 
 const $ = (selector) => document.querySelector(selector);
-const photoInput = $("#photoInput");
+const cameraInput = $("#cameraInput");
+const galleryInput = $("#galleryInput");
 const photoSection = $("#photoSection");
 const photoGrid = $("#photoGrid");
 const photoCount = $("#photoCount");
@@ -123,13 +124,28 @@ function setConnectionUi() {
   }
 }
 
-photoInput.addEventListener("change", () => {
+function addSelectedPhotos(input) {
   const room = MAX_PHOTOS - state.photos.length;
-  const incoming = [...photoInput.files].slice(0, room);
-  incoming.forEach((file) => state.photos.push({ file, organ: "auto", preview: URL.createObjectURL(file) }));
-  photoInput.value = "";
+  const incoming = [...input.files].slice(0, room);
+
+  incoming.forEach((file) => {
+    state.photos.push({
+      file,
+      organ: "auto",
+      preview: URL.createObjectURL(file),
+    });
+  });
+
+  if (input.files.length > room) {
+    statusText.textContent = `You can add up to ${MAX_PHOTOS} photos of the same plant.`;
+  }
+
+  input.value = "";
   renderPhotos();
-});
+}
+
+cameraInput.addEventListener("change", () => addSelectedPhotos(cameraInput));
+galleryInput.addEventListener("change", () => addSelectedPhotos(galleryInput));
 
 function renderPhotos() {
   photoGrid.innerHTML = "";
