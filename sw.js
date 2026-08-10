@@ -1,4 +1,4 @@
-const CACHE = "which-flower-pages-v2";
+const CACHE = "which-flower-pages-v3";
 const BASE = new URL("./", self.location.href);
 const APP_SHELL = [
   "",
