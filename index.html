@@ -215,10 +215,7 @@
 
       <section class="card">
         <div class="sectionHead">
-          <div>
-            <h2>Vos captures</h2>
-            <p id="speciesObservationSummary" class="muted"></p>
-          </div>
+          <h2>Vos captures</h2>
         </div>
         <div id="speciesPhotoList" class="speciesPhotoList"></div>
       </section>
@@ -250,6 +247,43 @@
     </article>
   </template>
 
+  <dialog id="locationPicker" class="locationPicker">
+    <form method="dialog" class="locationPickerPanel" id="locationPickerForm">
+      <div class="sectionHead">
+        <div>
+          <p class="eyebrow">POSITION DE L’OBSERVATION</p>
+          <h2>Ajouter une position</h2>
+        </div>
+        <button id="cancelLocationPickerButton" class="textButton neutral" type="button">Annuler</button>
+      </div>
+
+      <div class="locationModeButtons" aria-label="Méthode de choix de la position">
+        <button id="locationMapModeButton" class="secondaryButton active" type="button">Choisir sur la carte</button>
+        <button id="locationAddressModeButton" class="secondaryButton" type="button">Entrer une adresse</button>
+        <button id="locationCurrentButton" class="secondaryButton" type="button">Ma position actuelle</button>
+      </div>
+
+      <section id="locationMapMode" class="locationModePanel">
+        <p class="muted">Touchez la carte à l’endroit de l’observation.</p>
+        <div id="locationPickerMap" class="locationPickerMap" aria-label="Choisir une position sur la carte"></div>
+      </section>
+
+      <section id="locationAddressMode" class="locationModePanel hidden">
+        <label class="fieldLabel" for="locationAddressInput">Adresse ou lieu</label>
+        <div class="locationAddressRow">
+          <input id="locationAddressInput" type="search" placeholder="Ex. Jardin des Plantes, Toulouse" autocomplete="street-address" />
+          <button id="searchLocationAddressButton" class="secondaryButton" type="button">Rechercher</button>
+        </div>
+        <div id="locationSearchResults" class="locationSearchResults"></div>
+      </section>
+
+      <div id="locationSelectionSummary" class="locationSelectionSummary muted">Aucune position sélectionnée.</div>
+      <p id="locationPickerStatus" class="statusText" aria-live="polite"></p>
+      <button id="saveLocationButton" class="primaryButton" type="button" disabled>Enregistrer cette position</button>
+      <p class="locationAttribution muted">Recherche d’adresse : OpenStreetMap / Nominatim.</p>
+    </form>
+  </dialog>
+
   <dialog id="photoEditor" class="photoEditor">
     <form method="dialog" class="editorPanel" id="editorForm">
       <div class="sectionHead">
@@ -266,8 +300,8 @@
       </div>
       <label class="rangeField">Zoom <input id="editorZoom" type="range" min="1" max="3" step="0.01" value="1" /></label>
       <div class="aspectButtons" aria-label="Format de recadrage">
-        <button type="button" data-aspect="original">Original</button>
-        <button type="button" data-aspect="4:3" class="active">4:3</button>
+        <button type="button" data-aspect="original" class="active">Original</button>
+        <button type="button" data-aspect="4:3">4:3</button>
         <button type="button" data-aspect="1:1">Carré</button>
       </div>
       <p class="muted">Faites glisser l’image pour choisir le cadrage.</p>
