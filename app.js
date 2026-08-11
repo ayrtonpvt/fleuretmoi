@@ -611,9 +611,13 @@ identifyButton.addEventListener("click", async () => {
       location: deriveObservationLocation(state.photos),
     });
     resetDraftPhotos();
-    statusText.textContent = result.remainingIdentificationRequests != null
-      ? `${result.remainingIdentificationRequests} identifications Pl@ntNet restantes aujourd’hui.`
-      : "Identification terminée.";
+    if (!result.results?.length) {
+      statusText.textContent = "Pl@ntNet n’a proposé aucune correspondance pour ces photos. L’observation a été conservée sans identification.";
+    } else {
+      statusText.textContent = result.remainingIdentificationRequests != null
+        ? `${result.remainingIdentificationRequests} identifications Pl@ntNet restantes aujourd’hui.`
+        : "Identification terminée.";
+    }
     await refreshAllLists();
     await openCapture(observationId, { type: "main", value: "camera" });
   } catch (error) {
@@ -647,8 +651,22 @@ async function queueCurrentPhotos() {
 }
 
 async function saveObservation(result, photos = [], options = {}) {
-  const best = result.results?.[0];
-  if (!best) return null;
+  // Pl@ntNet can return a 200 OK with an empty results array (e.g. no organ
+  // recognized). Previously that made this function return null, which made
+  // callers wipe the draft photos / delete the queued item while saving
+  // nothing at all — the user's photos disappeared with no trace. We now
+  // always persist an observation, flagged as "noMatch", so nothing is lost.
+  const hasMatch = Boolean(result.results?.[0]);
+  const best = hasMatch ? result.results[0] : {
+    score: 0,
+    scientificName: "Aucune correspondance",
+    scientificNameWithoutAuthor: "Aucune correspondance",
+    commonNames: ["Aucune correspondance trouvée"],
+    family: "",
+    genus: "",
+    images: [],
+  };
+  const storedResult = hasMatch ? result : { ...result, results: [best] };
   return dbAdd(STORE_OBSERVATIONS, {
     createdAt: Date.now(),
     captureAt: options.captureAt || deriveObservationDate(photos),
@@ -656,11 +674,12 @@ async function saveObservation(result, photos = [], options = {}) {
     verified: false,
     verifiedAt: null,
     speciesId: null,
+    noMatch: !hasMatch,
     commonName: best.commonNames?.[0] || best.scientificNameWithoutAuthor,
     scientificName: best.scientificName,
     scientificNameWithoutAuthor: best.scientificNameWithoutAuthor || best.scientificName,
     score: best.score,
-    result,
+    result: storedResult,
     photos,
     location: options.location || deriveObservationLocation(photos),
     note: options.note || "",
@@ -668,6 +687,7 @@ async function saveObservation(result, photos = [], options = {}) {
 }
 
 async function ensureSpeciesForObservation(observation) {
+  if (observation.noMatch) return { species: null, isNew: false };
   const result = getResultFromObservation(observation);
   const best = result.results?.[0];
   if (!best) return { species: null, isNew: false };
@@ -815,14 +835,18 @@ async function renderCapture(item) {
   const verificationLabel = $("#verificationLabel");
   const verificationHint = $("#verificationHint");
   $("#newSpeciesMessage").classList.add("hidden");
-  verificationLabel.textContent = item.verified ? "Vérifiée" : "Non vérifiée";
+  verificationLabel.textContent = item.verified ? "Vérifiée" : (item.noMatch ? "Sans résultat" : "Non vérifiée");
   verificationLabel.classList.toggle("verified", Boolean(item.verified));
   bestScore.classList.toggle("verified", Boolean(item.verified));
-  bestScore.disabled = Boolean(item.verified);
+  bestScore.disabled = Boolean(item.verified) || Boolean(item.noMatch);
   if (item.verified) {
     bestScore.innerHTML = checkSvg();
     bestScore.setAttribute("aria-label", "Identification vérifiée");
     verificationHint.textContent = "Cette espèce a été confirmée pour cette observation.";
+  } else if (item.noMatch) {
+    bestScore.textContent = "—";
+    bestScore.setAttribute("aria-label", "Aucune correspondance proposée");
+    verificationHint.textContent = "Pl@ntNet n’a proposé aucune correspondance pour ces photos. Réessayez avec de nouvelles photos si besoin.";
   } else {
     bestScore.textContent = `${Math.round(best.score * 100)}%`;
     bestScore.setAttribute("aria-label", "Valider cette identification");
