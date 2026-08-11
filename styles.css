@@ -341,7 +341,7 @@ h2 {
 .observationPhotoCard { position: relative; flex: 0 0 auto; }
 .observationPhotoOpen { display: block; border: 0; padding: 0; border-radius: 13px; background: transparent; overflow: hidden; cursor: zoom-in; }
 .observationPhotoOpen:focus-visible { outline: 3px solid rgba(56,107,76,.24); outline-offset: 3px; }
-.observationPhotoCard img { width: auto; height: 118px; max-width: min(72vw, 260px); border-radius: 13px; object-fit: contain; background: var(--soft); display: block; transition: transform .15s ease; }
+.observationPhotoCard img { width: auto; height: 400px; max-width: min(72vw, 260px); border-radius: 13px; object-fit: contain; background: var(--soft); display: block; transition: transform .15s ease; }
 .observationPhotoOpen:hover img { transform: scale(1.015); }
 .openObservationButton { border: 0; background: transparent; color: var(--green); font-weight: 700; font-size: .78rem; }
 .observationNote { margin: 10px 0 0; padding: 10px 12px; border-radius: 11px; background: var(--soft-2); color: var(--muted); font-size: .82rem; line-height: 1.45; white-space: pre-wrap; }
