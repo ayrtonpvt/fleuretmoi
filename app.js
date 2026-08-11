@@ -1792,7 +1792,17 @@ async function renderSpecies(species) {
   $("#speciesNote").value = species.note || "";
   $("#speciesNoteStatus").textContent = "";
   if (window.FleuretmoiIllustrations?.renderSpeciesIllustration) {
-    await window.FleuretmoiIllustrations.renderSpeciesIllustration(species);
+    // L’illustration est décorative : une erreur dans ce module ne doit jamais
+    // empêcher l’ouverture de la fiche d’espèce elle-même.
+    try {
+      await window.FleuretmoiIllustrations.renderSpeciesIllustration(species);
+    } catch (error) {
+      console.error("Impossible d’afficher l’illustration de cette espèce", error);
+      const media = $("#speciesIllustrationMedia");
+      if (media) {
+        media.innerHTML = '<div class="speciesIllustrationPlaceholderInner"><span>Illustration indisponible</span><small>RÉESSAYER</small></div>';
+      }
+    }
   }
 }
 

@@ -62,3 +62,14 @@
 - Priorité stricte : catégorie de l’espèce exacte -> botanical illustrations -> espèce seule -> classement esthétique -> recadrage secours -> multi-espèces.
 - Choix enregistré localement avec source Wikimedia, licence et copie de travail hors ligne.
 - Recadrage/zoom/repositionnement non destructif depuis la fiche espèce.
+
+
+## Passe interface illustration / Herbier
+
+- Le placeholder d’illustration affiche désormais simplement **CHOISIR**.
+- La source/licence Wikimedia reste enregistrée dans les données mais n’est plus affichée sous l’illustration.
+- Les boutons Recadrer / Changer / Retirer sous l’image ont été supprimés : un clic sur l’illustration ouvre directement l’éditeur.
+- L’éditeur contient **Changer d’illustration**, Réinitialiser et un bouton de validation en forme de coche.
+- Les modales principales peuvent être fermées en cliquant sur leur arrière-plan.
+- La fiche d’identité de l’espèce reprend la couleur de fond dominante de l’illustration, calculée sur ses bords, avec adaptation du contraste du texte.
+- Le sélecteur natif de tri de l’Herbier a été remplacé par un bouton/menu CSS dédié.

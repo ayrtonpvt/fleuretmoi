@@ -26,6 +26,7 @@
     dialog: document.getElementById("illustrationEditorDialog"),
     canvas: document.getElementById("illustrationEditorCanvas"),
     zoom: document.getElementById("illustrationEditorZoom"),
+    change: document.getElementById("illustrationEditorChange"),
     reset: document.getElementById("illustrationEditorReset"),
     cancel: document.getElementById("illustrationEditorCancel"),
     save: document.getElementById("illustrationEditorSave"),
@@ -37,11 +38,23 @@
   let editorPointer = null;
 
   picker.cancel?.addEventListener("click", () => picker.dialog?.close());
+  picker.dialog?.addEventListener("pointerdown", (event) => {
+    if (event.target === picker.dialog) picker.dialog.close();
+  });
   picker.more?.addEventListener("click", () => {
     pickerState.visible += PAGE_STEP;
     renderPickerGrid();
   });
   editor.cancel?.addEventListener("click", closeIllustrationEditor);
+  editor.dialog?.addEventListener("pointerdown", (event) => {
+    if (event.target === editor.dialog) closeIllustrationEditor();
+  });
+  editor.change?.addEventListener("click", async () => {
+    if (!editorState?.species) return;
+    const species = editorState.species;
+    closeIllustrationEditor();
+    await openIllustrationPicker(species);
+  });
   editor.reset?.addEventListener("click", resetIllustrationEditor);
   editor.zoom?.addEventListener("input", () => {
     if (!editorState) return;
@@ -68,23 +81,25 @@
   editor.canvas?.addEventListener("pointercancel", () => { editorPointer = null; });
 
   async function renderSpeciesIllustration(species) {
+    const card = document.getElementById("speciesIdentityCard");
     const button = document.getElementById("speciesIllustrationButton");
     const media = document.getElementById("speciesIllustrationMedia");
     const actions = document.getElementById("speciesIllustrationActions");
-    const change = document.getElementById("changeSpeciesIllustrationButton");
-    const adjust = document.getElementById("adjustSpeciesIllustrationButton");
-    const remove = document.getElementById("removeSpeciesIllustrationButton");
     const source = document.getElementById("speciesIllustrationSource");
-    if (!button || !media || !actions || !source) return;
+    if (!button || !media) return;
 
     media.innerHTML = "";
-    actions.hidden = true;
-    source.hidden = true;
-    source.removeAttribute("href");
+    if (actions) actions.hidden = true;
+    if (source) {
+      source.hidden = true;
+      source.removeAttribute("href");
+      source.textContent = "";
+    }
+    resetSpeciesIdentityTheme(card);
 
-    const illustration = species.illustration;
+    const illustration = species?.illustration;
     const blob = illustration?.displayBlob || illustration?.sourceBlob;
-    if (!blob) {
+    if (!(blob instanceof Blob)) {
       const placeholder = document.createElement("div");
       placeholder.className = "speciesIllustrationPlaceholderInner";
       placeholder.innerHTML = '<span>Illustration botanique</span><small>CHOISIR</small>';
@@ -94,31 +109,37 @@
       return;
     }
 
-    const img = document.createElement("img");
-    img.alt = `Illustration botanique de ${species.scientificNameWithoutAuthor || species.scientificName}`;
-    img.src = blobUrl(blob, "speciesObjectUrls");
-    media.appendChild(img);
-    button.setAttribute("aria-label", "Recadrer l’illustration botanique");
-    button.onclick = () => openExistingIllustrationEditor(species);
+    try {
+      const img = document.createElement("img");
+      img.alt = `Illustration botanique de ${species.scientificNameWithoutAuthor || species.scientificName}`;
+      img.src = blobUrl(blob, "speciesObjectUrls");
+      media.appendChild(img);
+      button.setAttribute("aria-label", "Ajuster l’illustration botanique");
+      button.onclick = () => openExistingIllustrationEditor(species);
 
-    actions.hidden = false;
-    change.onclick = () => openIllustrationPicker(species);
-    adjust.onclick = () => openExistingIllustrationEditor(species);
-    remove.onclick = async () => {
-      if (!confirm("Retirer l’illustration botanique de cette fiche ?")) return;
-      const fresh = await dbGet(STORE_SPECIES, species.id);
-      if (!fresh) return;
-      fresh.illustration = null;
-      await dbPut(STORE_SPECIES, fresh);
-      await renderSpecies(fresh);
-      await renderHerbarium();
-    };
-
-    if (illustration.descriptionUrl) {
-      source.hidden = false;
-      source.href = illustration.descriptionUrl;
-      const license = illustration.licenseShort ? ` · ${illustration.licenseShort}` : "";
-      source.textContent = `Wikimedia Commons${license}`;
+      // Une couleur déjà enregistrée est utilisée immédiatement. Pour les
+      // illustrations créées avant cette fonction, on la recalcule une fois.
+      let backgroundColor = illustration?.backgroundColor;
+      if (!backgroundColor) {
+        backgroundColor = await extractIllustrationBackgroundColor(blob);
+        try {
+          const fresh = await dbGet(STORE_SPECIES, species.id);
+          if (fresh?.illustration && !fresh.illustration.backgroundColor) {
+            fresh.illustration.backgroundColor = backgroundColor;
+            await dbPut(STORE_SPECIES, fresh);
+          }
+        } catch (persistError) {
+          console.warn("Couleur de fond non mémorisée", persistError);
+        }
+      }
+      if (state.currentSpeciesId === species.id) applySpeciesIdentityTheme(card, backgroundColor);
+    } catch (error) {
+      // Même avec une ancienne donnée d’illustration invalide, la fiche reste
+      // accessible et permet à l’utilisateur de choisir une nouvelle image.
+      console.error("Illustration botanique illisible", error);
+      media.innerHTML = '<div class="speciesIllustrationPlaceholderInner"><span>Illustration indisponible</span><small>CHANGER</small></div>';
+      button.setAttribute("aria-label", "Changer l’illustration botanique");
+      button.onclick = () => openIllustrationPicker(species);
     }
   }
 
@@ -263,8 +284,12 @@
   async function openIllustrationEditor({ mode, species, sourceBlob, metadata }) {
     try {
       const image = await loadImageFromBlob(sourceBlob);
-      editorState = { mode, species, sourceBlob, metadata, image, zoom: 1, panX: 0, panY: 0 };
-      editor.zoom.value = "1";
+      const framing = mode === "existing" ? (metadata?.framing || {}) : {};
+      const zoom = Number.isFinite(Number(framing.zoom)) ? Number(framing.zoom) : 1;
+      const panX = Number.isFinite(Number(framing.panX)) ? Number(framing.panX) : 0;
+      const panY = Number.isFinite(Number(framing.panY)) ? Number(framing.panY) : 0;
+      editorState = { mode, species, sourceBlob, metadata, image, zoom, panX, panY };
+      editor.zoom.value = String(zoom);
       editor.status.textContent = "";
       drawIllustrationEditor();
       editor.dialog.showModal();
@@ -336,12 +361,14 @@
     try {
       const displayBlob = await exportIllustrationDisplayBlob();
       if (!displayBlob) throw new Error("Impossible de produire l’illustration recadrée.");
+      const backgroundColor = await extractIllustrationBackgroundColor(displayBlob);
       const species = await dbGet(STORE_SPECIES, editorState.species.id);
       if (!species) throw new Error("La fiche d’espèce n’existe plus.");
       species.illustration = {
         ...editorState.metadata,
         sourceBlob: editorState.sourceBlob,
         displayBlob,
+        backgroundColor,
         framing: { zoom: editorState.zoom, panX: editorState.panX, panY: editorState.panY },
         updatedAt: Date.now(),
       };
@@ -362,6 +389,80 @@
     editorState = null;
     editorPointer = null;
     if (editor.status) editor.status.textContent = "";
+  }
+
+  function resetSpeciesIdentityTheme(card) {
+    if (!card) return;
+    card.classList.remove("illustrationThemed");
+    ["--species-theme-bg", "--species-theme-ink", "--species-theme-muted", "--species-theme-chip", "--species-theme-border"].forEach((name) => card.style.removeProperty(name));
+  }
+
+  function applySpeciesIdentityTheme(card, backgroundColor) {
+    if (!card || !backgroundColor) return;
+    const rgb = parseRgbCss(backgroundColor);
+    if (!rgb) return;
+    const luminance = relativeLuminance(rgb.r, rgb.g, rgb.b);
+    const dark = luminance < 0.34;
+    card.style.setProperty("--species-theme-bg", `rgb(${rgb.r} ${rgb.g} ${rgb.b})`);
+    card.style.setProperty("--species-theme-ink", dark ? "#f8faf7" : "#173025");
+    card.style.setProperty("--species-theme-muted", dark ? "rgba(248,250,247,.78)" : "rgba(23,48,37,.72)");
+    card.style.setProperty("--species-theme-chip", dark ? "rgba(255,255,255,.13)" : "rgba(255,255,255,.42)");
+    card.style.setProperty("--species-theme-border", dark ? "rgba(255,255,255,.18)" : "rgba(23,48,37,.12)");
+    card.classList.add("illustrationThemed");
+  }
+
+  async function extractIllustrationBackgroundColor(blob) {
+    const image = await loadImageFromBlob(blob);
+    const canvas = document.createElement("canvas");
+    canvas.width = 80;
+    canvas.height = 100;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+    const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+
+    // Le fond d’une planche botanique est généralement la couleur la plus
+    // fréquente près des bords. On regroupe les pixels en petits "bacs" de
+    // couleur plutôt que de prendre une moyenne, qui était trop facilement
+    // neutralisée par le dessin, une reliure sombre ou du texte.
+    const bins = new Map();
+    const depth = 11;
+    for (let y = 0; y < canvas.height; y++) for (let x = 0; x < canvas.width; x++) {
+      if (x >= depth && x < canvas.width - depth && y >= depth && y < canvas.height - depth) continue;
+      const i = (y * canvas.width + x) * 4;
+      if (data[i + 3] < 220) continue;
+      const r = data[i], g = data[i + 1], b = data[i + 2];
+      const qr = Math.round(r / 16) * 16;
+      const qg = Math.round(g / 16) * 16;
+      const qb = Math.round(b / 16) * 16;
+      const key = `${qr},${qg},${qb}`;
+      const bin = bins.get(key) || { count: 0, r: 0, g: 0, b: 0 };
+      bin.count += 1; bin.r += r; bin.g += g; bin.b += b;
+      bins.set(key, bin);
+    }
+    if (!bins.size) return "rgb(244 247 242)";
+    const best = [...bins.values()].sort((a, b) => b.count - a.count)[0];
+    let r = Math.round(best.r / best.count);
+    let g = Math.round(best.g / best.count);
+    let b = Math.round(best.b / best.count);
+
+    // Évite qu’un blanc pur soit visuellement indistinguable du fond de la
+    // page tout en conservant la teinte réelle du papier.
+    if (r > 248 && g > 248 && b > 248) { r = 246; g = 246; b = 243; }
+    return `rgb(${r} ${g} ${b})`;
+  }
+
+  function parseRgbCss(value) {
+    const match = String(value || "").match(/rgb\(\s*(\d+)\s+[, ]?\s*(\d+)\s+[, ]?\s*(\d+)\s*\)/i);
+    if (!match) return null;
+    return { r: Number(match[1]), g: Number(match[2]), b: Number(match[3]) };
+  }
+
+  function relativeLuminance(r, g, b) {
+    const channel = (v) => {
+      v /= 255;
+      return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+    };
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
   }
 
   function rankCandidates(candidates) {
