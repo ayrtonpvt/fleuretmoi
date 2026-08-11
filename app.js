@@ -31,6 +31,7 @@ const state = {
   lastGeocodeAt: 0,
   navDepth: 0,
   handlingPopState: false,
+  historyVisibleCount: 60,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -86,8 +87,11 @@ $("#saveApiKeyButton").addEventListener("click", async () => {
   if (navigator.onLine) await processQueue();
 });
 
+let dbPromise = null;
+
 function openDb() {
-  return new Promise((resolve, reject) => {
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
     request.onupgradeneeded = (event) => {
       const db = request.result;
@@ -128,6 +132,7 @@ function openDb() {
             verified: Boolean(legacy.verified),
             verifiedAt: legacy.verifiedAt || null,
             speciesId: null,
+            selection: { type: "plantnet", index: 0 },
             commonName: legacy.commonName || best.commonNames?.[0] || best.scientificNameWithoutAuthor || "Identification",
             scientificName: legacy.scientificName || best.scientificName || "Inconnue",
             scientificNameWithoutAuthor: best.scientificNameWithoutAuthor || legacy.scientificName || "Inconnue",
@@ -142,79 +147,98 @@ function openDb() {
         };
       }
     };
+    request.onsuccess = () => {
+      const db = request.result;
+      db.onversionchange = () => {
+        db.close();
+        dbPromise = null;
+      };
+      resolve(db);
+    };
+    request.onerror = () => {
+      dbPromise = null;
+      reject(request.error);
+    };
+    request.onblocked = () => console.warn("Mise à jour IndexedDB bloquée par un autre onglet Fleuretmoi.");
+  });
+  return dbPromise;
+}
+
+function requestResult(request) {
+  return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
 }
 
+function transactionDone(tx) {
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onabort = () => reject(tx.error || new Error("Transaction IndexedDB annulée."));
+    tx.onerror = () => reject(tx.error || new Error("Erreur IndexedDB."));
+  });
+}
+
 async function dbAdd(storeName, value) {
   const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, "readwrite");
-    const req = tx.objectStore(storeName).add(value);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
+  const tx = db.transaction(storeName, "readwrite");
+  const result = await requestResult(tx.objectStore(storeName).add(value));
+  await transactionDone(tx);
+  return result;
 }
 
 async function dbPut(storeName, value) {
   const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, "readwrite");
-    const req = tx.objectStore(storeName).put(value);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
+  const tx = db.transaction(storeName, "readwrite");
+  const result = await requestResult(tx.objectStore(storeName).put(value));
+  await transactionDone(tx);
+  return result;
 }
 
 async function dbGet(storeName, id) {
   const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, "readonly");
-    const req = tx.objectStore(storeName).get(id);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
+  const tx = db.transaction(storeName, "readonly");
+  const result = await requestResult(tx.objectStore(storeName).get(id));
+  await transactionDone(tx);
+  return result;
 }
 
 async function dbGetAll(storeName) {
   const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, "readonly");
-    const req = tx.objectStore(storeName).getAll();
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
+  const tx = db.transaction(storeName, "readonly");
+  const result = await requestResult(tx.objectStore(storeName).getAll());
+  await transactionDone(tx);
+  return result;
 }
 
 async function dbGetByIndex(storeName, indexName, value) {
   const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, "readonly");
-    const req = tx.objectStore(storeName).index(indexName).get(value);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
+  const tx = db.transaction(storeName, "readonly");
+  const result = await requestResult(tx.objectStore(storeName).index(indexName).get(value));
+  await transactionDone(tx);
+  return result;
+}
+
+async function dbGetAllByIndex(storeName, indexName, value) {
+  const db = await openDb();
+  const tx = db.transaction(storeName, "readonly");
+  const result = await requestResult(tx.objectStore(storeName).index(indexName).getAll(value));
+  await transactionDone(tx);
+  return result;
 }
 
 async function dbDelete(storeName, id) {
   const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, "readwrite");
-    const req = tx.objectStore(storeName).delete(id);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-  });
+  const tx = db.transaction(storeName, "readwrite");
+  await requestResult(tx.objectStore(storeName).delete(id));
+  await transactionDone(tx);
 }
 
 async function dbClear(storeName) {
   const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, "readwrite");
-    const req = tx.objectStore(storeName).clear();
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-  });
+  const tx = db.transaction(storeName, "readwrite");
+  await requestResult(tx.objectStore(storeName).clear());
+  await transactionDone(tx);
 }
 
 function setConnectionUi() {
@@ -281,6 +305,60 @@ function getResultFromLegacy(item) {
 
 function getResultFromObservation(item) {
   return getResultFromLegacy(item);
+}
+
+function normalizeCandidate(candidate = {}) {
+  const scientificName = String(candidate.scientificName || candidate.scientificNameWithoutAuthor || "Inconnue").trim() || "Inconnue";
+  const scientificNameWithoutAuthor = String(candidate.scientificNameWithoutAuthor || scientificName).trim() || scientificName;
+  const commonNames = Array.isArray(candidate.commonNames)
+    ? candidate.commonNames.filter(Boolean).map((name) => String(name))
+    : candidate.commonName ? [String(candidate.commonName)] : [];
+  return {
+    score: candidate.score == null ? null : (Number.isFinite(Number(candidate.score)) ? Number(candidate.score) : null),
+    scientificName,
+    scientificNameWithoutAuthor,
+    commonNames,
+    family: String(candidate.family || ""),
+    genus: String(candidate.genus || ""),
+    images: Array.isArray(candidate.images) ? candidate.images : [],
+    source: candidate.source || "plantnet",
+  };
+}
+
+function getObservationSelection(item) {
+  if (item?.selection?.type === "manual" && item.selection.candidate) {
+    return { type: "manual", candidate: normalizeCandidate({ ...item.selection.candidate, source: "manual" }) };
+  }
+  const results = getResultFromObservation(item).results || [];
+  const requested = Number(item?.selection?.index);
+  const index = Number.isInteger(requested) && requested >= 0 && requested < results.length ? requested : 0;
+  return { type: "plantnet", index };
+}
+
+function getSelectedCandidateInfo(item) {
+  const selection = getObservationSelection(item);
+  if (selection.type === "manual") return { selection, candidate: selection.candidate };
+  const candidate = getResultFromObservation(item).results?.[selection.index];
+  return { selection, candidate: candidate ? normalizeCandidate(candidate) : null };
+}
+
+function applyCandidateToObservation(observation, selection, candidate) {
+  const normalized = normalizeCandidate(candidate);
+  observation.selection = selection.type === "manual"
+    ? { type: "manual", candidate: normalized }
+    : { type: "plantnet", index: Number(selection.index) || 0 };
+  observation.commonName = normalized.commonNames?.[0] || normalized.scientificNameWithoutAuthor;
+  observation.scientificName = normalized.scientificName;
+  observation.scientificNameWithoutAuthor = normalized.scientificNameWithoutAuthor || normalized.scientificName;
+  observation.score = normalized.score;
+  return normalized;
+}
+
+function toDateTimeLocalValue(timestamp) {
+  const date = new Date(timestamp || Date.now());
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 function findReferenceImageUrl(best) {
@@ -611,13 +689,9 @@ identifyButton.addEventListener("click", async () => {
       location: deriveObservationLocation(state.photos),
     });
     resetDraftPhotos();
-    if (!result.results?.length) {
-      statusText.textContent = "Pl@ntNet n’a proposé aucune correspondance pour ces photos. L’observation a été conservée sans identification.";
-    } else {
-      statusText.textContent = result.remainingIdentificationRequests != null
-        ? `${result.remainingIdentificationRequests} identifications Pl@ntNet restantes aujourd’hui.`
-        : "Identification terminée.";
-    }
+    statusText.textContent = result.remainingIdentificationRequests != null
+      ? `${result.remainingIdentificationRequests} identifications Pl@ntNet restantes aujourd’hui.`
+      : "Identification terminée.";
     await refreshAllLists();
     await openCapture(observationId, { type: "main", value: "camera" });
   } catch (error) {
@@ -651,91 +725,161 @@ async function queueCurrentPhotos() {
 }
 
 async function saveObservation(result, photos = [], options = {}) {
-  // Pl@ntNet can return a 200 OK with an empty results array (e.g. no organ
-  // recognized). Previously that made this function return null, which made
-  // callers wipe the draft photos / delete the queued item while saving
-  // nothing at all — the user's photos disappeared with no trace. We now
-  // always persist an observation, flagged as "noMatch", so nothing is lost.
-  const hasMatch = Boolean(result.results?.[0]);
-  const best = hasMatch ? result.results[0] : {
-    score: 0,
-    scientificName: "Aucune correspondance",
-    scientificNameWithoutAuthor: "Aucune correspondance",
-    commonNames: ["Aucune correspondance trouvée"],
-    family: "",
-    genus: "",
-    images: [],
-  };
-  const storedResult = hasMatch ? result : { ...result, results: [best] };
-  return dbAdd(STORE_OBSERVATIONS, {
+  const best = result.results?.[0];
+  if (!best) throw new Error("Pl@ntNet n’a renvoyé aucune proposition exploitable.");
+  const observation = {
     createdAt: Date.now(),
     captureAt: options.captureAt || deriveObservationDate(photos),
     dateSource: photos.find((p) => p.capturedAt === (options.captureAt || deriveObservationDate(photos)))?.dateSource || "capture",
     verified: false,
     verifiedAt: null,
     speciesId: null,
-    noMatch: !hasMatch,
-    commonName: best.commonNames?.[0] || best.scientificNameWithoutAuthor,
-    scientificName: best.scientificName,
-    scientificNameWithoutAuthor: best.scientificNameWithoutAuthor || best.scientificName,
-    score: best.score,
-    result: storedResult,
+    selection: { type: "plantnet", index: 0 },
+    commonName: "",
+    scientificName: "",
+    scientificNameWithoutAuthor: "",
+    score: null,
+    result,
     photos,
     location: options.location || deriveObservationLocation(photos),
     note: options.note || "",
-  });
+  };
+  applyCandidateToObservation(observation, observation.selection, best);
+  return dbAdd(STORE_OBSERVATIONS, observation);
 }
 
-async function ensureSpeciesForObservation(observation) {
-  if (observation.noMatch) return { species: null, isNew: false };
-  const result = getResultFromObservation(observation);
-  const best = result.results?.[0];
-  if (!best) return { species: null, isNew: false };
-  const scientificKey = normalizeScientificKey(best.scientificNameWithoutAuthor || best.scientificName);
+async function recomputeSpecies(speciesId) {
+  if (!speciesId) return null;
+  const species = await dbGet(STORE_SPECIES, speciesId);
+  if (!species) return null;
+  const observations = (await dbGetAllByIndex(STORE_OBSERVATIONS, "speciesId", speciesId))
+    .filter((observation) => observation.verified && observation.speciesId === speciesId)
+    .sort((a, b) => (b.captureAt || b.createdAt) - (a.captureAt || a.createdAt));
+
+  if (!observations.length) {
+    await dbDelete(STORE_SPECIES, speciesId);
+    return null;
+  }
+
+  const dates = observations.map((observation) => observation.captureAt || observation.createdAt).filter(Number.isFinite);
+  species.firstSeenAt = dates.length ? Math.min(...dates) : species.firstSeenAt || Date.now();
+  species.lastSeenAt = dates.length ? Math.max(...dates) : species.lastSeenAt || Date.now();
+  // speciesId on observations is the canonical relation. Keep old observationIds out of future records.
+  delete species.observationIds;
+  await dbPut(STORE_SPECIES, species);
+  return species;
+}
+
+async function getOrCreateSpeciesForCandidate(candidate, observation) {
+  const normalized = normalizeCandidate(candidate);
+  const scientificKey = normalizeScientificKey(normalized.scientificNameWithoutAuthor || normalized.scientificName);
   let species = await dbGetByIndex(STORE_SPECIES, "scientificKey", scientificKey);
   const isNew = !species;
 
   if (!species) {
     species = {
       scientificKey,
-      scientificName: best.scientificName,
-      scientificNameWithoutAuthor: best.scientificNameWithoutAuthor || best.scientificName,
-      commonName: best.commonNames?.[0] || best.scientificNameWithoutAuthor || best.scientificName,
-      family: best.family || "",
-      genus: best.genus || "",
-      observationIds: [observation.id],
+      scientificName: normalized.scientificName,
+      scientificNameWithoutAuthor: normalized.scientificNameWithoutAuthor || normalized.scientificName,
+      commonName: normalized.commonNames?.[0] || normalized.scientificNameWithoutAuthor || normalized.scientificName,
+      family: normalized.family || "",
+      genus: normalized.genus || "",
       firstSeenAt: observation.captureAt || observation.createdAt,
       lastSeenAt: observation.captureAt || observation.createdAt,
-      note: observation.note || "",
+      note: "",
       illustration: null,
       createdAt: Date.now(),
     };
     species.id = await dbAdd(STORE_SPECIES, species);
-  } else {
-    const ids = new Set(species.observationIds || []);
-    ids.add(observation.id);
-    species.observationIds = [...ids];
-    const obsDate = observation.captureAt || observation.createdAt;
-    species.firstSeenAt = Math.min(species.firstSeenAt || obsDate, obsDate);
-    species.lastSeenAt = Math.max(species.lastSeenAt || obsDate, obsDate);
-    if (!species.note && observation.note) species.note = observation.note;
+  } else if (normalized.source === "manual") {
+    species.scientificName = normalized.scientificName || species.scientificName;
+    species.scientificNameWithoutAuthor = normalized.scientificNameWithoutAuthor || species.scientificNameWithoutAuthor;
+    if (normalized.commonNames?.[0]) species.commonName = normalized.commonNames[0];
+    if (normalized.family) species.family = normalized.family;
+    if (normalized.genus) species.genus = normalized.genus;
     await dbPut(STORE_SPECIES, species);
   }
+  return { species, isNew };
+}
 
+async function assignObservationToSpecies(observation, requestedSelection = getObservationSelection(observation)) {
+  const oldSpeciesId = observation.speciesId || null;
+  let selection = requestedSelection;
+  let candidate;
+
+  if (selection?.type === "manual") {
+    candidate = normalizeCandidate({ ...selection.candidate, source: "manual" });
+    selection = { type: "manual", candidate };
+  } else {
+    const result = getResultFromObservation(observation);
+    const index = Number(selection?.index);
+    if (!Number.isInteger(index) || index < 0 || !result.results?.[index]) throw new Error("Cette proposition Pl@ntNet n’est plus disponible.");
+    candidate = normalizeCandidate(result.results[index]);
+    selection = { type: "plantnet", index };
+  }
+
+  applyCandidateToObservation(observation, selection, candidate);
+  const { species, isNew } = await getOrCreateSpeciesForCandidate(candidate, observation);
   observation.speciesId = species.id;
   observation.verified = true;
   observation.verifiedAt = observation.verifiedAt || Date.now();
   await dbPut(STORE_OBSERVATIONS, observation);
+
+  await recomputeSpecies(species.id);
+  if (oldSpeciesId && oldSpeciesId !== species.id) await recomputeSpecies(oldSpeciesId);
   return { species, isNew };
+}
+
+async function unverifyObservation(observation) {
+  const oldSpeciesId = observation.speciesId || null;
+  observation.verified = false;
+  observation.verifiedAt = null;
+  observation.speciesId = null;
+  await dbPut(STORE_OBSERVATIONS, observation);
+  if (oldSpeciesId) await recomputeSpecies(oldSpeciesId);
+}
+
+async function setObservationSelection(observation, selection) {
+  let candidate;
+  if (selection.type === "manual") candidate = normalizeCandidate({ ...selection.candidate, source: "manual" });
+  else candidate = normalizeCandidate(getResultFromObservation(observation).results?.[selection.index] || {});
+  applyCandidateToObservation(observation, selection, candidate);
+  await dbPut(STORE_OBSERVATIONS, observation);
 }
 
 async function syncVerifiedSpecies() {
   const observations = await dbGetAll(STORE_OBSERVATIONS);
+  const touchedSpecies = new Set();
+
   for (const observation of observations) {
-    if (observation.verified && !observation.speciesId) {
-      await ensureSpeciesForObservation(observation);
+    if (!observation.verified) {
+      if (observation.speciesId) {
+        touchedSpecies.add(observation.speciesId);
+        observation.speciesId = null;
+        await dbPut(STORE_OBSERVATIONS, observation);
+      }
+      continue;
+    }
+
+    const { selection, candidate } = getSelectedCandidateInfo(observation);
+    if (!candidate) continue;
+    const expectedKey = normalizeScientificKey(candidate.scientificNameWithoutAuthor || candidate.scientificName);
+    const linkedSpecies = observation.speciesId ? await dbGet(STORE_SPECIES, observation.speciesId) : null;
+    if (!linkedSpecies || linkedSpecies.scientificKey !== expectedKey) {
+      if (observation.speciesId) touchedSpecies.add(observation.speciesId);
+      const { species } = await assignObservationToSpecies(observation, selection);
+      touchedSpecies.add(species.id);
+    } else {
+      applyCandidateToObservation(observation, selection, candidate);
+      if (!observation.selection) observation.selection = selection;
+      await dbPut(STORE_OBSERVATIONS, observation);
+      touchedSpecies.add(linkedSpecies.id);
     }
   }
+
+  const speciesRows = await dbGetAll(STORE_SPECIES);
+  for (const species of speciesRows) touchedSpecies.add(species.id);
+  for (const speciesId of touchedSpecies) await recomputeSpecies(speciesId);
 }
 
 function hideAllViews() {
@@ -782,7 +926,10 @@ $$("#mainNavigation [data-view]").forEach((button) => button.addEventListener("c
 
 async function openCapture(id, returnTarget = { type: "main", value: state.currentMainView }, { historyMode = "push" } = {}) {
   const item = await dbGet(STORE_OBSERVATIONS, id);
-  if (!item) return;
+  if (!item) {
+    await showMainView("camera", { historyMode: historyMode === "none" ? "none" : "replace" });
+    return false;
+  }
   state.currentObservationId = id;
   state.captureReturn = returnTarget;
   await renderCapture(item);
@@ -791,6 +938,7 @@ async function openCapture(id, returnTarget = { type: "main", value: state.curre
   mainNavigation.classList.add("hidden");
   window.scrollTo({ top: 0, behavior: "instant" });
   recordRoute({ type: "capture", id, returnTarget }, historyMode);
+  return true;
 }
 
 async function closeCapture() {
@@ -810,10 +958,11 @@ $("#backCaptureButton").addEventListener("click", closeCapture);
 async function renderCapture(item) {
   clearObjectUrls("detailObjectUrls");
   const result = getResultFromObservation(item);
-  const best = result.results?.[0];
+  const { selection, candidate: best } = getSelectedCandidateInfo(item);
   if (!best) return;
 
   $("#captureDate").textContent = formatDate(item.captureAt || item.createdAt, true);
+  $("#captureDateInput").value = toDateTimeLocalValue(item.captureAt || item.createdAt);
   const capturePhotoGrid = $("#capturePhotoGrid");
   capturePhotoGrid.innerHTML = "";
   const photos = Array.isArray(item.photos) ? item.photos : [];
@@ -834,33 +983,37 @@ async function renderCapture(item) {
 
   const verificationLabel = $("#verificationLabel");
   const verificationHint = $("#verificationHint");
+  const unverifyButton = $("#unverifyIdentificationButton");
   $("#newSpeciesMessage").classList.add("hidden");
-  verificationLabel.textContent = item.verified ? "Vérifiée" : (item.noMatch ? "Sans résultat" : "Non vérifiée");
+  verificationLabel.textContent = item.verified ? "Vérifiée" : "Non vérifiée";
   verificationLabel.classList.toggle("verified", Boolean(item.verified));
   bestScore.classList.toggle("verified", Boolean(item.verified));
-  bestScore.disabled = Boolean(item.verified) || Boolean(item.noMatch);
+  bestScore.disabled = Boolean(item.verified);
+  unverifyButton.classList.toggle("hidden", !item.verified);
   if (item.verified) {
     bestScore.innerHTML = checkSvg();
     bestScore.setAttribute("aria-label", "Identification vérifiée");
-    verificationHint.textContent = "Cette espèce a été confirmée pour cette observation.";
-  } else if (item.noMatch) {
-    bestScore.textContent = "—";
-    bestScore.setAttribute("aria-label", "Aucune correspondance proposée");
-    verificationHint.textContent = "Pl@ntNet n’a proposé aucune correspondance pour ces photos. Réessayez avec de nouvelles photos si besoin.";
+    verificationHint.textContent = selection.type === "manual"
+      ? "Identification manuelle confirmée. Vous pouvez encore la corriger ou annuler la validation."
+      : "Cette proposition est confirmée. Vous pouvez encore choisir une autre proposition ou annuler la validation.";
   } else {
-    bestScore.textContent = `${Math.round(best.score * 100)}%`;
+    bestScore.textContent = selection.type === "manual" ? "OK" : `${Math.round(Number(best.score || 0) * 100)}%`;
     bestScore.setAttribute("aria-label", "Valider cette identification");
-    verificationHint.textContent = "Touchez le pourcentage pour confirmer que cette proposition correspond bien à la plante observée.";
+    verificationHint.textContent = selection.type === "manual"
+      ? "Touchez OK pour confirmer cette identification manuelle."
+      : "Touchez le pourcentage pour confirmer cette proposition, ou choisissez-en une autre ci-dessous.";
   }
 
   const meta = $("#bestMeta");
   meta.innerHTML = "";
-  [best.family && `Famille : ${best.family}`, best.genus && `Genre : ${best.genus}`].filter(Boolean).forEach((text) => {
-    const chip = document.createElement("span");
-    chip.className = "metaChip";
-    chip.textContent = text;
-    meta.appendChild(chip);
-  });
+  [best.family && `Famille : ${best.family}`, best.genus && `Genre : ${best.genus}`, selection.type === "manual" && "Identification manuelle"]
+    .filter(Boolean)
+    .forEach((text) => {
+      const chip = document.createElement("span");
+      chip.className = "metaChip";
+      chip.textContent = text;
+      meta.appendChild(chip);
+    });
 
   const referencePhotoBlock = $("#referencePhotoBlock");
   const referencePhoto = $("#referencePhoto");
@@ -871,13 +1024,19 @@ async function renderCapture(item) {
 
   const alternatives = $("#alternatives");
   alternatives.innerHTML = "";
-  if (result.results.length > 1) {
+  const plantNetCandidates = result.results || [];
+  const otherCandidates = plantNetCandidates
+    .map((candidate, index) => ({ candidate: normalizeCandidate(candidate), index }))
+    .filter(({ index }) => selection.type !== "plantnet" || index !== selection.index);
+
+  if (otherCandidates.length) {
     const title = document.createElement("p");
     title.className = "alternativesTitle";
-    title.textContent = "Autres propositions";
+    title.textContent = "Autres propositions Pl@ntNet";
     alternatives.appendChild(title);
   }
-  result.results.slice(1).forEach((candidate) => {
+
+  otherCandidates.forEach(({ candidate, index }) => {
     const row = document.createElement("div");
     row.className = "altRow";
     const left = document.createElement("div");
@@ -890,16 +1049,44 @@ async function renderCapture(item) {
     scientific.href = googleImagesUrl(candidate.scientificNameWithoutAuthor || candidate.scientificName);
     scientific.target = "_blank";
     scientific.rel = "noopener";
+    left.append(common, scientific);
+
+    const right = document.createElement("div");
+    right.className = "altActions";
     const score = document.createElement("div");
     score.className = "altScore";
-    score.textContent = `${Math.round(candidate.score * 100)}%`;
-    left.append(common, scientific);
-    row.append(left, score);
+    score.textContent = `${Math.round(Number(candidate.score || 0) * 100)}%`;
+    const choose = document.createElement("button");
+    choose.type = "button";
+    choose.className = "candidateSelectButton";
+    choose.textContent = item.verified ? "Réassigner" : "Choisir";
+    choose.addEventListener("click", async () => {
+      const latest = await dbGet(STORE_OBSERVATIONS, item.id);
+      if (!latest) return;
+      let isNew = false;
+      if (latest.verified) {
+        const ok = confirm(`Réassigner cette observation à « ${candidate.commonNames?.[0] || candidate.scientificNameWithoutAuthor} » ?`);
+        if (!ok) return;
+        ({ isNew } = await assignObservationToSpecies(latest, { type: "plantnet", index }));
+      } else {
+        await setObservationSelection(latest, { type: "plantnet", index });
+      }
+      const updated = await dbGet(STORE_OBSERVATIONS, item.id);
+      await renderCapture(updated);
+      if (isNew) {
+        $("#newSpeciesMessage").classList.remove("hidden");
+        launchConfetti();
+      }
+      await refreshAllLists();
+    });
+    right.append(score, choose);
+    row.append(left, right);
     alternatives.appendChild(row);
   });
 
   $("#captureNote").value = item.note || "";
   $("#captureNoteStatus").textContent = "";
+  $("#captureDateStatus").textContent = "";
   renderCaptureLocation(item);
 }
 
@@ -1111,7 +1298,7 @@ bestScore.addEventListener("click", async () => {
   if (!state.currentObservationId) return;
   const item = await dbGet(STORE_OBSERVATIONS, state.currentObservationId);
   if (!item || item.verified) return;
-  const { isNew } = await ensureSpeciesForObservation(item);
+  const { isNew } = await assignObservationToSpecies(item, getObservationSelection(item));
   const updated = await dbGet(STORE_OBSERVATIONS, item.id);
   await renderCapture(updated);
   if (isNew) {
@@ -1121,29 +1308,137 @@ bestScore.addEventListener("click", async () => {
   await refreshAllLists();
 });
 
+$("#unverifyIdentificationButton").addEventListener("click", async () => {
+  if (!state.currentObservationId) return;
+  const item = await dbGet(STORE_OBSERVATIONS, state.currentObservationId);
+  if (!item?.verified) return;
+  if (!confirm("Annuler la validation de cette observation ? Elle sera retirée de l’Herbier jusqu’à une nouvelle confirmation.")) return;
+  await unverifyObservation(item);
+  const updated = await dbGet(STORE_OBSERVATIONS, item.id);
+  await renderCapture(updated);
+  await refreshAllLists();
+});
+
+$("#manualIdentificationButton").addEventListener("click", async () => {
+  if (!state.currentObservationId) return;
+  const item = await dbGet(STORE_OBSERVATIONS, state.currentObservationId);
+  if (!item) return;
+  const { candidate } = getSelectedCandidateInfo(item);
+  $("#manualCommonName").value = candidate?.commonNames?.[0] || "";
+  $("#manualScientificName").value = candidate?.scientificNameWithoutAuthor || candidate?.scientificName || "";
+  $("#manualFamily").value = candidate?.family || "";
+  $("#manualGenus").value = candidate?.genus || "";
+  $("#manualIdentificationStatus").textContent = "";
+  $("#manualIdentificationDialog").showModal();
+});
+
+$("#cancelManualIdentificationButton").addEventListener("click", () => $("#manualIdentificationDialog").close());
+
+$("#saveManualIdentificationButton").addEventListener("click", async () => {
+  if (!state.currentObservationId) return;
+  const scientificName = $("#manualScientificName").value.trim();
+  if (!scientificName) {
+    $("#manualIdentificationStatus").textContent = "Le nom scientifique est obligatoire.";
+    $("#manualScientificName").focus();
+    return;
+  }
+  const item = await dbGet(STORE_OBSERVATIONS, state.currentObservationId);
+  if (!item) return;
+  const commonName = $("#manualCommonName").value.trim();
+  const family = $("#manualFamily").value.trim();
+  const genus = $("#manualGenus").value.trim() || scientificName.split(/\s+/)[0] || "";
+  const selection = {
+    type: "manual",
+    candidate: normalizeCandidate({
+      source: "manual",
+      scientificName,
+      scientificNameWithoutAuthor: scientificName,
+      commonNames: commonName ? [commonName] : [],
+      family,
+      genus,
+      score: null,
+      images: [],
+    }),
+  };
+
+  let isNew = false;
+  if (item.verified) {
+    const ok = confirm("Enregistrer cette correction manuelle et réassigner l’observation dans l’Herbier ?");
+    if (!ok) return;
+    ({ isNew } = await assignObservationToSpecies(item, selection));
+  } else {
+    await setObservationSelection(item, selection);
+  }
+  $("#manualIdentificationDialog").close();
+  const updated = await dbGet(STORE_OBSERVATIONS, item.id);
+  await renderCapture(updated);
+  if (isNew) {
+    $("#newSpeciesMessage").classList.remove("hidden");
+    launchConfetti();
+  }
+  await refreshAllLists();
+});
+
+$("#saveCaptureDateButton").addEventListener("click", async () => {
+  if (!state.currentObservationId) return;
+  const value = $("#captureDateInput").value;
+  const timestamp = value ? new Date(value).getTime() : NaN;
+  if (!Number.isFinite(timestamp)) {
+    $("#captureDateStatus").textContent = "Date invalide.";
+    return;
+  }
+  const item = await dbGet(STORE_OBSERVATIONS, state.currentObservationId);
+  if (!item) return;
+  item.captureAt = timestamp;
+  item.dateSource = "manuel";
+  await dbPut(STORE_OBSERVATIONS, item);
+  if (item.speciesId) await recomputeSpecies(item.speciesId);
+  $("#captureDate").textContent = formatDate(timestamp, true);
+  $("#captureDateStatus").textContent = "Date enregistrée.";
+  await refreshAllLists();
+});
+
 $("#saveCaptureNoteButton").addEventListener("click", async () => {
   if (!state.currentObservationId) return;
   const item = await dbGet(STORE_OBSERVATIONS, state.currentObservationId);
   if (!item) return;
   item.note = $("#captureNote").value.trim();
   await dbPut(STORE_OBSERVATIONS, item);
-  if (item.speciesId) {
-    const species = await dbGet(STORE_SPECIES, item.speciesId);
-    if (species && !species.note && item.note) {
-      species.note = item.note;
-      await dbPut(STORE_SPECIES, species);
-    }
-  }
   $("#captureNoteStatus").textContent = "Note enregistrée.";
+});
+
+$("#deleteObservationButton").addEventListener("click", async () => {
+  if (!state.currentObservationId) return;
+  const item = await dbGet(STORE_OBSERVATIONS, state.currentObservationId);
+  if (!item) return;
+  if (!confirm("Supprimer définitivement cette observation et ses photos enregistrées dans Fleuretmoi ?")) return;
+  const oldSpeciesId = item.speciesId || null;
+  const returnTarget = state.captureReturn;
+  await dbDelete(STORE_OBSERVATIONS, item.id);
+  if (oldSpeciesId) await recomputeSpecies(oldSpeciesId);
+  state.currentObservationId = null;
+  clearObjectUrls("detailObjectUrls");
+  await refreshAllLists();
+
+  if (returnTarget?.type === "species") {
+    if (returnTarget.value && await dbGet(STORE_SPECIES, returnTarget.value)) await openSpecies(returnTarget.value, { historyMode: "replace" });
+    else await showMainView("herbarium", { historyMode: "replace" });
+  } else if (returnTarget?.type === "main") {
+    await showMainView(returnTarget.value || "camera", { historyMode: "replace" });
+  } else {
+    await showMainView("camera", { historyMode: "replace" });
+  }
 });
 
 async function renderHistory() {
   clearObjectUrls("historyObjectUrls");
-  const rows = (await dbGetAll(STORE_OBSERVATIONS)).sort((a, b) => (b.captureAt || b.createdAt) - (a.captureAt || a.createdAt)).slice(0, 60);
+  const allRows = (await dbGetAll(STORE_OBSERVATIONS)).sort((a, b) => (b.captureAt || b.createdAt) - (a.captureAt || a.createdAt));
+  const rows = allRows.slice(0, state.historyVisibleCount);
   historyList.innerHTML = "";
   historyList.classList.toggle("emptyState", rows.length === 0);
   if (!rows.length) {
     historyList.textContent = "Aucune identification pour le moment.";
+    $("#loadMoreHistoryButton").classList.add("hidden");
     return;
   }
 
@@ -1160,6 +1455,7 @@ async function renderHistory() {
       const img = document.createElement("img");
       img.src = blobUrl(photo.blob, "historyObjectUrls");
       img.alt = "";
+      img.loading = "lazy";
       media.appendChild(img);
     } else media.classList.add("historyMediaEmpty");
 
@@ -1180,7 +1476,8 @@ async function renderHistory() {
       status.innerHTML = checkSvg();
       status.setAttribute("aria-label", "Vérifiée");
     } else {
-      status.textContent = `${Math.round(Number(item.score || 0) * 100)}%`;
+      const { selection, candidate } = getSelectedCandidateInfo(item);
+      status.textContent = selection.type === "manual" ? "MAN" : `${Math.round(Number(candidate?.score || item.score || 0) * 100)}%`;
       status.setAttribute("aria-label", "Non vérifiée");
     }
 
@@ -1188,7 +1485,18 @@ async function renderHistory() {
     row.addEventListener("click", () => openCapture(item.id, { type: "main", value: "camera" }));
     historyList.appendChild(row);
   });
+
+  const loadMore = $("#loadMoreHistoryButton");
+  loadMore.classList.toggle("hidden", allRows.length <= state.historyVisibleCount);
+  loadMore.textContent = allRows.length > state.historyVisibleCount
+    ? `Afficher plus (${allRows.length - state.historyVisibleCount} restantes)`
+    : "Afficher plus";
 }
+
+$("#loadMoreHistoryButton").addEventListener("click", async () => {
+  state.historyVisibleCount += 60;
+  await renderHistory();
+});
 
 async function renderQueue() {
   const items = (await dbGetAll(STORE_QUEUE)).sort((a, b) => a.createdAt - b.createdAt);
@@ -1202,14 +1510,36 @@ async function renderQueue() {
   items.forEach((item) => {
     const row = document.createElement("div");
     row.className = "queueRow";
-    const count = item.photos.length;
-    row.innerHTML = `<span>${count} photo${count > 1 ? "s" : ""} · ${formatDate(item.captureAt || item.createdAt)}</span><span class="muted">En attente de connexion</span>`;
+    const info = document.createElement("span");
+    const count = item.photos?.length || 0;
+    info.textContent = `${count} photo${count > 1 ? "s" : ""} · ${formatDate(item.captureAt || item.createdAt)}`;
+    const statusWrap = document.createElement("div");
+    statusWrap.className = "queueStatusWrap";
+    const status = document.createElement("span");
+    status.className = item.lastError ? "queueError" : "muted";
+    if (!navigator.onLine) status.textContent = "En attente de connexion";
+    else if (!getApiKey()) status.textContent = "Clé API requise";
+    else if (item.lastError) status.textContent = `Erreur : ${item.lastError}`;
+    else status.textContent = "En attente d’identification";
+    statusWrap.appendChild(status);
+    if (navigator.onLine && getApiKey() && item.lastError) {
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "queueRetryButton";
+      retry.textContent = "Réessayer";
+      retry.addEventListener("click", processQueue);
+      statusWrap.appendChild(retry);
+    }
+    row.append(info, statusWrap);
     queueList.appendChild(row);
   });
 }
 
 async function processQueue() {
-  if (!navigator.onLine || !getApiKey()) return;
+  if (!navigator.onLine || !getApiKey()) {
+    await renderQueue();
+    return;
+  }
   const items = (await dbGetAll(STORE_QUEUE)).sort((a, b) => a.createdAt - b.createdAt);
   for (const item of items) {
     const photos = storedPhotosToFiles(item.photos);
@@ -1221,24 +1551,43 @@ async function processQueue() {
         note: item.note || "",
       });
       await dbDelete(STORE_QUEUE, item.id);
-    } catch {
+    } catch (error) {
+      console.error("Identification de la file d’attente impossible", error);
+      item.lastError = error?.message || "Erreur inconnue";
+      item.lastAttemptAt = Date.now();
+      item.attemptCount = Number(item.attemptCount || 0) + 1;
+      await dbPut(STORE_QUEUE, item);
       break;
     }
   }
   await refreshAllLists();
 }
 
-async function getSpeciesObservations(species) {
-  const ids = new Set(species?.observationIds || []);
-  const observations = await dbGetAll(STORE_OBSERVATIONS);
-  return observations
-    .filter((obs) => ids.has(obs.id) || obs.speciesId === species.id)
+async function getSpeciesObservations(speciesOrId) {
+  const speciesId = typeof speciesOrId === "object" ? speciesOrId?.id : speciesOrId;
+  if (!speciesId) return [];
+  return (await dbGetAllByIndex(STORE_OBSERVATIONS, "speciesId", speciesId))
+    .filter((observation) => observation.verified && observation.speciesId === speciesId)
     .sort((a, b) => (b.captureAt || b.createdAt) - (a.captureAt || a.createdAt));
+}
+
+function groupObservationsBySpecies(observations) {
+  const groups = new Map();
+  observations.forEach((observation) => {
+    if (!observation.verified || !observation.speciesId) return;
+    if (!groups.has(observation.speciesId)) groups.set(observation.speciesId, []);
+    groups.get(observation.speciesId).push(observation);
+  });
+  groups.forEach((rows) => rows.sort((a, b) => (b.captureAt || b.createdAt) - (a.captureAt || a.createdAt)));
+  return groups;
 }
 
 async function renderHerbarium() {
   clearObjectUrls("herbariumObjectUrls");
-  let speciesRows = await dbGetAll(STORE_SPECIES);
+  const allSpecies = await dbGetAll(STORE_SPECIES);
+  const allObservations = await dbGetAll(STORE_OBSERVATIONS);
+  const observationsBySpecies = groupObservationsBySpecies(allObservations);
+  let speciesRows = [...allSpecies];
   const query = $("#herbariumSearch").value.trim().toLocaleLowerCase("fr");
   const sort = $("#herbariumSort").value;
 
@@ -1252,7 +1601,6 @@ async function renderHerbarium() {
   else if (sort === "first") speciesRows.sort((a, b) => (b.firstSeenAt || 0) - (a.firstSeenAt || 0));
   else speciesRows.sort((a, b) => (a.commonName || a.scientificName).localeCompare(b.commonName || b.scientificName, "fr", { sensitivity: "base" }));
 
-  const allSpecies = await dbGetAll(STORE_SPECIES);
   $("#speciesCount").textContent = `${allSpecies.length} espèce${allSpecies.length > 1 ? "s" : ""}`;
   const list = $("#herbariumList");
   list.innerHTML = "";
@@ -1266,13 +1614,13 @@ async function renderHerbarium() {
   }
 
   for (const species of speciesRows) {
-    const observations = await getSpeciesObservations(species);
+    const observations = observationsBySpecies.get(species.id) || [];
     const card = document.createElement("article");
     card.className = "card speciesEntry";
     const button = document.createElement("button");
     button.type = "button";
     button.className = "speciesCardButton";
-    button.setAttribute("aria-label", `Ouvrir ${species.commonName}`);
+    button.setAttribute("aria-label", `Ouvrir ${species.commonName || species.scientificNameWithoutAuthor || species.scientificName}`);
     button.addEventListener("click", () => openSpecies(species.id));
 
     const inner = document.createElement("div");
@@ -1286,6 +1634,7 @@ async function renderHerbarium() {
         img.className = "speciesThumb";
         img.src = blobUrl(blob, "herbariumObjectUrls");
         img.alt = "";
+        img.loading = "lazy";
         thumbs.appendChild(img);
       });
     } else {
@@ -1318,7 +1667,10 @@ $("#herbariumSort").addEventListener("change", renderHerbarium);
 
 async function openSpecies(id, { historyMode = "push" } = {}) {
   const species = await dbGet(STORE_SPECIES, id);
-  if (!species) return;
+  if (!species) {
+    await showMainView("herbarium", { historyMode: historyMode === "none" ? "none" : "replace" });
+    return false;
+  }
   state.currentSpeciesId = id;
   await renderSpecies(species);
   hideAllViews();
@@ -1326,6 +1678,7 @@ async function openSpecies(id, { historyMode = "push" } = {}) {
   mainNavigation.classList.add("hidden");
   window.scrollTo({ top: 0, behavior: "instant" });
   recordRoute({ type: "species", id }, historyMode);
+  return true;
 }
 
 $("#backSpeciesButton").addEventListener("click", async () => {
@@ -1354,6 +1707,15 @@ async function renderSpecies(species) {
     chip.textContent = text;
     meta.appendChild(chip);
   });
+
+  const summary = $("#speciesObservationSummary");
+  if (observations.length) {
+    const oldest = observations[observations.length - 1]?.captureAt || observations[observations.length - 1]?.createdAt;
+    const newest = observations[0]?.captureAt || observations[0]?.createdAt;
+    summary.textContent = `${observations.length} observation${observations.length > 1 ? "s" : ""} · première ${formatDate(oldest)} · dernière ${formatDate(newest)}`;
+  } else {
+    summary.textContent = "Aucune observation liée.";
+  }
 
   const list = $("#speciesPhotoList");
   list.innerHTML = "";
@@ -1431,8 +1793,8 @@ async function renderMap() {
   }
   initMap();
   state.mapLayer.clearLayers();
-  const observations = (await dbGetAll(STORE_OBSERVATIONS)).filter((obs) => Number.isFinite(obs.location?.latitude) && Number.isFinite(obs.location?.longitude));
   const allObservations = await dbGetAll(STORE_OBSERVATIONS);
+  const observations = allObservations.filter((obs) => Number.isFinite(obs.location?.latitude) && Number.isFinite(obs.location?.longitude));
   $("#mapCount").textContent = `${observations.length} capture${observations.length > 1 ? "s" : ""}`;
   const missing = allObservations.length - observations.length;
   mapStatus.textContent = missing > 0
@@ -1979,11 +2341,147 @@ document.addEventListener("touchcancel", () => {
   else state.swipeGesture = null;
 }, { passive: true, capture: true });
 
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error("Impossible de lire une photo pour la sauvegarde."));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function encodeBackupValue(value) {
+  if (value instanceof Blob) {
+    return {
+      __fleuretmoiBlob: true,
+      type: value.type || "application/octet-stream",
+      name: value instanceof File ? value.name : "",
+      dataUrl: await blobToDataUrl(value),
+    };
+  }
+  if (Array.isArray(value)) return Promise.all(value.map(encodeBackupValue));
+  if (value && typeof value === "object") {
+    const output = {};
+    for (const [key, child] of Object.entries(value)) output[key] = await encodeBackupValue(child);
+    return output;
+  }
+  return value;
+}
+
+function dataUrlToBlob(dataUrl, type = "application/octet-stream") {
+  const [, encoded = ""] = String(dataUrl).split(",", 2);
+  const binary = atob(encoded);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return new Blob([bytes], { type });
+}
+
+async function decodeBackupValue(value) {
+  if (Array.isArray(value)) return Promise.all(value.map(decodeBackupValue));
+  if (value && typeof value === "object") {
+    if (value.__fleuretmoiBlob && typeof value.dataUrl === "string") {
+      const blob = dataUrlToBlob(value.dataUrl, value.type);
+      return value.name ? new File([blob], value.name, { type: value.type || blob.type }) : blob;
+    }
+    const output = {};
+    for (const [key, child] of Object.entries(value)) output[key] = await decodeBackupValue(child);
+    return output;
+  }
+  return value;
+}
+
+async function exportBackup() {
+  const button = $("#exportBackupButton");
+  const backupStatus = $("#backupStatus");
+  button.disabled = true;
+  backupStatus.textContent = "Préparation de la sauvegarde…";
+  try {
+    const payload = {
+      format: "fleuretmoi-backup",
+      formatVersion: 1,
+      exportedAt: Date.now(),
+      databaseVersion: DB_VERSION,
+      observations: await dbGetAll(STORE_OBSERVATIONS),
+      species: await dbGetAll(STORE_SPECIES),
+      queue: await dbGetAll(STORE_QUEUE),
+    };
+    const encoded = await encodeBackupValue(payload);
+    const blob = new Blob([JSON.stringify(encoded)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const date = new Date().toISOString().slice(0, 10);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `fleuretmoi-sauvegarde-${date}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    backupStatus.textContent = `Sauvegarde exportée : ${payload.observations.length} observation${payload.observations.length > 1 ? "s" : ""}, ${payload.species.length} espèce${payload.species.length > 1 ? "s" : ""}.`;
+  } catch (error) {
+    console.error("Export impossible", error);
+    backupStatus.textContent = `Export impossible : ${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function replaceDatabaseFromBackup(backup) {
+  const db = await openDb();
+  const tx = db.transaction([STORE_OBSERVATIONS, STORE_SPECIES, STORE_QUEUE, STORE_HISTORY], "readwrite");
+  const observationsStore = tx.objectStore(STORE_OBSERVATIONS);
+  const speciesStore = tx.objectStore(STORE_SPECIES);
+  const queueStore = tx.objectStore(STORE_QUEUE);
+  const historyStore = tx.objectStore(STORE_HISTORY);
+  observationsStore.clear();
+  speciesStore.clear();
+  queueStore.clear();
+  historyStore.clear();
+  (backup.species || []).forEach((row) => speciesStore.put(row));
+  (backup.observations || []).forEach((row) => observationsStore.put(row));
+  (backup.queue || []).forEach((row) => queueStore.put(row));
+  await transactionDone(tx);
+}
+
+$("#exportBackupButton").addEventListener("click", exportBackup);
+
+$("#importBackupInput").addEventListener("change", async (event) => {
+  const input = event.currentTarget;
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file) return;
+  const backupStatus = $("#backupStatus");
+  backupStatus.textContent = "Lecture de la sauvegarde…";
+  try {
+    const parsed = JSON.parse(await file.text());
+    if (parsed?.format !== "fleuretmoi-backup" || Number(parsed?.formatVersion) !== 1) {
+      throw new Error("Ce fichier n’est pas une sauvegarde Fleuretmoi compatible.");
+    }
+    const decoded = await decodeBackupValue(parsed);
+    if (!Array.isArray(decoded.observations) || !Array.isArray(decoded.species) || !Array.isArray(decoded.queue)) {
+      throw new Error("La sauvegarde est incomplète.");
+    }
+    if (!confirm(`Remplacer les données actuelles par cette sauvegarde (${decoded.observations.length} observations, ${decoded.species.length} espèces) ?`)) {
+      backupStatus.textContent = "Import annulé.";
+      return;
+    }
+    await replaceDatabaseFromBackup(decoded);
+    state.historyVisibleCount = 60;
+    await syncVerifiedSpecies();
+    await refreshAllLists();
+    backupStatus.textContent = "Sauvegarde importée avec succès.";
+  } catch (error) {
+    console.error("Import impossible", error);
+    backupStatus.textContent = `Import impossible : ${error.message}`;
+  }
+});
+
 $("#clearHistoryButton").addEventListener("click", async () => {
-  if (!confirm("Effacer toutes les observations et toutes les espèces de l’herbier enregistrées sur cet appareil ?")) return;
+  if (!confirm("Effacer toutes les observations, les espèces de l’Herbier et les éléments en attente hors connexion sur cet appareil ?")) return;
   await dbClear(STORE_OBSERVATIONS);
   await dbClear(STORE_SPECIES);
+  await dbClear(STORE_QUEUE);
   await dbClear(STORE_HISTORY);
+  state.historyVisibleCount = 60;
   await refreshAllLists();
 });
 
