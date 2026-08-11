@@ -294,31 +294,93 @@ function findReferenceImageUrl(best) {
   return image.imageUrl || image.urlM || image.urlO || image.urlS || "";
 }
 
+function metadataDateToTimestamp(value) {
+  if (!value) return null;
+  if (value instanceof Date) {
+    const time = value.getTime();
+    return Number.isFinite(time) ? time : null;
+  }
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value !== "string") return null;
+
+  const trimmed = value.trim();
+  // EXIF commonly uses YYYY:MM:DD HH:mm:ss, which Date.parse does not reliably understand.
+  const exifMatch = trimmed.match(/^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(?:\s*([+-]\d{2}:?\d{2}|Z))?$/);
+  if (exifMatch) {
+    const [, year, month, day, hour, minute, second, fraction = "0", offset] = exifMatch;
+    const millis = Number((fraction + "000").slice(0, 3));
+    if (offset) {
+      const normalizedOffset = offset === "Z" ? "Z" : offset.includes(":") ? offset : `${offset.slice(0, 3)}:${offset.slice(3)}`;
+      const parsed = Date.parse(`${year}-${month}-${day}T${hour}:${minute}:${second}.${String(millis).padStart(3, "0")}${normalizedOffset}`);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    const local = new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second), millis).getTime();
+    if (Number.isFinite(local)) return local;
+  }
+
+  const parsed = Date.parse(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function plausibleFileDate(file) {
+  const time = Number(file?.lastModified);
+  const lowerBound = new Date(1990, 0, 1).getTime();
+  const upperBound = Date.now() + 24 * 60 * 60 * 1000;
+  return Number.isFinite(time) && time >= lowerBound && time <= upperBound ? time : null;
+}
+
 async function extractPhotoMetadata(file, source) {
+  const fileDate = source === "gallery" ? plausibleFileDate(file) : null;
   const meta = {
-    capturedAt: Date.now(),
-    dateSource: source === "camera" ? "capture" : "import",
+    capturedAt: fileDate || Date.now(),
+    dateSource: source === "camera" ? "capture" : fileDate ? "fichier" : "import",
     location: null,
+    exifFound: false,
   };
 
   if (source === "gallery" && window.exifr) {
+    let exif = null;
     try {
-      const exif = await window.exifr.parse(file, ["DateTimeOriginal", "CreateDate", "ModifyDate", "OffsetTimeOriginal"]);
-      const exifDate = exif?.DateTimeOriginal || exif?.CreateDate || exif?.ModifyDate;
-      if (exifDate instanceof Date && !Number.isNaN(exifDate.getTime())) {
-        meta.capturedAt = exifDate.getTime();
-        meta.dateSource = "exif";
-      }
+      // Full parsing gives us EXIF + XMP + GPS where the selected file actually contains them.
+      exif = await window.exifr.parse(file, true);
+      meta.exifFound = Boolean(exif && Object.keys(exif).length);
     } catch {
-      // Some images simply do not contain readable EXIF data.
+      exif = null;
     }
-    try {
-      const gps = await window.exifr.gps(file);
-      if (Number.isFinite(gps?.latitude) && Number.isFinite(gps?.longitude)) {
-        meta.location = { latitude: gps.latitude, longitude: gps.longitude, source: "exif" };
+
+    if (exif) {
+      const dateCandidates = [
+        exif.DateTimeOriginal,
+        exif.CreateDate,
+        exif.DateTimeDigitized,
+        exif.DateTime,
+        exif.DateCreated,
+        exif.CreationDate,
+        exif.ModifyDate,
+      ];
+      for (const candidate of dateCandidates) {
+        const timestamp = metadataDateToTimestamp(candidate);
+        if (timestamp) {
+          meta.capturedAt = timestamp;
+          meta.dateSource = "exif";
+          break;
+        }
       }
-    } catch {
-      // GPS metadata is optional.
+
+      if (Number.isFinite(exif.latitude) && Number.isFinite(exif.longitude)) {
+        meta.location = { latitude: exif.latitude, longitude: exif.longitude, source: "exif" };
+      }
+    }
+
+    if (!meta.location) {
+      try {
+        const gps = await window.exifr.gps(file);
+        if (Number.isFinite(gps?.latitude) && Number.isFinite(gps?.longitude)) {
+          meta.location = { latitude: gps.latitude, longitude: gps.longitude, source: "exif" };
+        }
+      } catch {
+        // Android/iOS pickers may redact location metadata before the browser receives the file.
+      }
     }
   }
 
@@ -388,7 +450,13 @@ draftNote.addEventListener("input", () => { state.draftNote = draftNote.value; }
 
 function photoDateLabel(photo) {
   if (!photo?.capturedAt) return "";
-  const source = photo.dateSource === "exif" ? "date de la photo" : photo.dateSource === "capture" ? "prise maintenant" : "date d’import";
+  const source = photo.dateSource === "exif"
+    ? "date EXIF"
+    : photo.dateSource === "fichier"
+      ? "date du fichier"
+      : photo.dateSource === "capture"
+        ? "prise maintenant"
+        : "date d’import";
   return `${formatDate(photo.capturedAt)} · ${source}`;
 }
 
