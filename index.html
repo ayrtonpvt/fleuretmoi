@@ -1,432 +1,104 @@
-<!doctype html>
-<html lang="fr">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#244d36" />
-  <meta name="description" content="Fleuretmoi, herbier personnel et identification de plantes avec Pl@ntNet." />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
-  <link rel="manifest" href="./manifest.webmanifest" />
-  <link rel="icon" href="./icons/icon-192.png" />
-  <link rel="apple-touch-icon" href="./icons/icon-192.png" />
-  <link rel="stylesheet" href="./styles.css" />
-  <title>Fleuretmoi</title>
-</head>
-<body>
-  <main class="shell">
-    <nav id="mainNavigation" class="mainNavigation" aria-label="Navigation principale">
-      <button type="button" data-view="map">Carte</button>
-      <button type="button" data-view="camera" class="active">Identifier</button>
-      <button type="button" data-view="herbarium">Herbier</button>
-    </nav>
-
-    <section id="cameraView" class="appView">
-      <header class="topbar">
-        <div>
-          <p class="eyebrow">HERBIER PERSONNEL</p>
-          <h1>Fleuretmoi</h1>
-        </div>
-        <div id="connectionBadge" class="badge">Vérification…</div>
-      </header>
-
-      <section id="setupCard" class="card setupCard hidden">
-        <div class="sectionHead">
-          <div>
-            <p class="eyebrow">CONFIGURATION INITIALE</p>
-            <h2>Clé API Pl@ntNet</h2>
-            <p class="muted">Enregistrée uniquement dans ce navigateur, sur cet appareil.</p>
-          </div>
-          <span id="apiStatus" class="countPill">Non configurée</span>
-        </div>
-        <div class="keyRow">
-          <input id="apiKeyInput" class="keyInput" type="password" autocomplete="off" spellcheck="false" placeholder="Collez votre clé API Pl@ntNet" />
-          <button id="saveApiKeyButton" class="secondaryButton" type="button">Enregistrer</button>
-        </div>
-        <div class="originBox">
-          <span class="muted">Origine à autoriser dans Pl@ntNet :</span>
-          <code id="originText"></code>
-        </div>
-      </section>
-
-      <section class="hero card">
-        <div>
-          <h2>Identifier une plante</h2>
-          <p>Ajoutez une à cinq photos de la même plante. Vous pourrez les tourner et les recadrer avant l’identification.</p>
-        </div>
-        <div class="photoActions" aria-label="Ajouter des photos de la plante">
-          <label class="cameraButton">
-            <input id="cameraInput" type="file" accept="image/jpeg,image/png" capture="environment" />
-            <span>Prendre une photo</span>
-          </label>
-          <label class="galleryButton">
-            <input id="galleryInput" type="file" accept="image/jpeg,image/png" multiple />
-            <span>Choisir dans la galerie</span>
-          </label>
-        </div>
-      </section>
-
-      <section id="photoSection" class="card hidden">
-        <div class="sectionHead">
-          <h2>Photos</h2>
-          <span id="photoCount" class="muted"></span>
-        </div>
-        <div id="photoGrid" class="photoGrid"></div>
-        <label class="fieldLabel" for="draftNote">Note personnelle <span class="muted">(facultatif)</span></label>
-        <textarea id="draftNote" class="noteInput" rows="3" placeholder="Lieu précis, couleur, habitat, détail à retenir…"></textarea>
-        <button id="identifyButton" class="primaryButton">Identifier la plante</button>
-        <p id="statusText" class="statusText" aria-live="polite"></p>
-      </section>
-
-      <section class="card">
-        <div class="sectionHead">
-          <div>
-            <h2>En attente hors connexion</h2>
-            <p class="muted">Les photos prises sans connexion restent sur cet appareil jusqu’à leur identification.</p>
-          </div>
-          <span id="queueCount" class="countPill">0</span>
-        </div>
-        <div id="queueList" class="compactList emptyState">Aucune observation en attente.</div>
-      </section>
-
-      <section class="card historyCard">
-        <div class="sectionHead">
-          <div>
-            <h2>Historique</h2>
-            <p class="muted">Toutes vos captures, vérifiées ou non.</p>
-          </div>
-          <button id="clearHistoryButton" class="textButton" type="button">Effacer</button>
-        </div>
-        <div id="historyList" class="compactList emptyState">Aucune identification pour le moment.</div>
-        <button id="loadMoreHistoryButton" class="secondaryButton standaloneButton hidden" type="button">Afficher plus</button>
-      </section>
-
-      <section class="card dataCard">
-        <div class="sectionHead">
-          <div>
-            <h2>Sauvegarde</h2>
-            <p class="muted">Exportez l’Herbier, les observations et leurs photos dans un fichier local. La clé API n’est jamais incluse.</p>
-          </div>
-        </div>
-        <div class="dataActions">
-          <button id="exportBackupButton" class="secondaryButton" type="button">Exporter une sauvegarde</button>
-          <label class="secondaryButton importBackupButton">
-            Importer une sauvegarde
-            <input id="importBackupInput" type="file" accept="application/json,.json" />
-          </label>
-        </div>
-        <p id="backupStatus" class="statusText" aria-live="polite"></p>
-      </section>
-    </section>
-
-    <section id="herbariumView" class="appView hidden">
-      <header class="topbar">
-        <div>
-          <p class="eyebrow">HERBIER PERSONNEL</p>
-          <h1>Herbier</h1>
-        </div>
-        <span id="speciesCount" class="countPill">0 espèce</span>
-      </header>
-      <section class="card herbariumTools">
-        <label class="searchField">
-          <span class="srOnly">Rechercher dans l’herbier</span>
-          <input id="herbariumSearch" type="search" placeholder="Rechercher une espèce…" autocomplete="off" />
-        </label>
-        <div class="sortControl">
-          <button id="herbariumSortButton" class="sortButton" type="button" aria-haspopup="menu" aria-expanded="false">
-            <svg class="sortButtonIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h11M8 12h8M8 18h5M4 5v14M2 17l2 2 2-2"/></svg>
-            <span id="herbariumSortLabel">Ordre alphabétique</span>
-            <svg class="sortChevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>
-          </button>
-          <div id="herbariumSortMenu" class="sortMenu" role="menu" hidden>
-            <button type="button" role="menuitemradio" aria-checked="true" data-sort="alpha">Ordre alphabétique</button>
-            <button type="button" role="menuitemradio" aria-checked="false" data-sort="recent">Dernière capture</button>
-            <button type="button" role="menuitemradio" aria-checked="false" data-sort="first">Première capture</button>
-          </div>
-        </div>
-      </section>
-      <section id="herbariumList" class="herbariumList"></section>
-    </section>
-
-    <section id="mapView" class="appView hidden">
-      <header class="topbar">
-        <div>
-          <p class="eyebrow">OBSERVATIONS</p>
-          <h1>Carte</h1>
-        </div>
-        <span id="mapCount" class="countPill">0 capture</span>
-      </header>
-      <section class="card mapCard">
-        <div id="plantMap" class="plantMap" aria-label="Carte interactive des observations"></div>
-        <p id="mapStatus" class="muted mapStatus"></p>
-      </section>
-    </section>
-
-    <section id="captureView" class="appView hidden">
-      <header class="detailTopbar">
-        <button id="backCaptureButton" class="backButton" type="button" aria-label="Retour">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
-          <span>Retour</span>
-        </button>
-        <p class="eyebrow">OBSERVATION</p>
-      </header>
-
-      <section class="card capturePhotosCard">
-        <div class="sectionHead">
-          <div>
-            <h2>Votre plante</h2>
-            <p id="captureDate" class="muted"></p>
-          </div>
-          <span id="verificationLabel" class="verificationPill">Non vérifiée</span>
-        </div>
-        <div id="capturePhotoGrid" class="capturePhotoGrid"></div>
-        <p id="legacyPhotoNote" class="muted hidden">Cette ancienne identification ne contient pas de photo enregistrée.</p>
-        <div id="captureLocationRow" class="locationRow"></div>
-        <div class="captureDateEditor">
-          <label class="fieldLabel" for="captureDateInput">Date et heure de l’observation</label>
-          <div class="captureDateEditorRow">
-            <input id="captureDateInput" type="datetime-local" />
-            <button id="saveCaptureDateButton" class="secondaryButton" type="button">Enregistrer la date</button>
-          </div>
-          <p id="captureDateStatus" class="statusText" aria-live="polite"></p>
-        </div>
-      </section>
-
-      <section id="resultSection" class="card resultCard">
-        <div class="sectionHead resultHead">
-          <div>
-            <p class="eyebrow">PROPOSITION</p>
-            <h2 id="bestCommonName">Résultat</h2>
-            <a id="bestScientificName" class="scientific scientificLink" target="_blank" rel="noopener"></a>
-          </div>
-          <button id="bestScore" class="scoreRing" type="button" aria-label="Valider cette identification"></button>
-        </div>
-        <div id="newSpeciesMessage" class="newSpeciesMessage hidden">Nouvelle espèce !</div>
-        <p id="verificationHint" class="verificationHint">Touchez le pourcentage pour confirmer que cette proposition correspond bien à la plante observée.</p>
-        <div class="identificationActions">
-          <button id="manualIdentificationButton" class="secondaryButton" type="button">Corriger manuellement</button>
-          <button id="unverifyIdentificationButton" class="textButton hidden" type="button">Annuler la validation</button>
-        </div>
-        <div id="bestMeta" class="metaRow"></div>
-        <div id="referencePhotoBlock" class="referencePhotoBlock hidden">
-          <p class="referenceLabel">Photo de référence</p>
-          <img id="referencePhoto" alt="Photo de référence de l’espèce proposée" />
-        </div>
-        <div id="alternatives" class="alternatives"></div>
-      </section>
-
-      <section class="card">
-        <h2>Note de cette observation</h2>
-        <textarea id="captureNote" class="noteInput" rows="4" placeholder="Ajouter une note…"></textarea>
-        <button id="saveCaptureNoteButton" class="secondaryButton standaloneButton" type="button">Enregistrer la note</button>
-        <p id="captureNoteStatus" class="statusText" aria-live="polite"></p>
-      </section>
-
-      <section class="card dangerZone">
-        <h2>Supprimer cette observation</h2>
-        <p class="muted">La suppression retire aussi ses photos de Fleuretmoi. Si c’est la dernière observation de l’espèce, la fiche correspondante disparaîtra de l’Herbier.</p>
-        <button id="deleteObservationButton" class="dangerButton standaloneButton" type="button">Supprimer définitivement</button>
-      </section>
-    </section>
-
-    <section id="speciesView" class="appView hidden">
-      <header class="detailTopbar">
-        <button id="backSpeciesButton" class="backButton" type="button" aria-label="Retour à l’herbier">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
-          <span>Herbier</span>
-        </button>
-        <p class="eyebrow">FICHE D’ESPÈCE</p>
-      </header>
-
-      <section id="speciesIdentityCard" class="card speciesIdentityCard">
-        <div class="speciesIllustrationPanel">
-          <button id="speciesIllustrationButton" class="speciesIllustrationButton" type="button" aria-label="Choisir une illustration botanique">
-            <span id="speciesIllustrationMedia" class="speciesIllustrationMedia"></span>
-          </button>
-          <div id="speciesIllustrationActions" class="speciesIllustrationActions" hidden></div>
-          <a id="speciesIllustrationSource" class="speciesIllustrationSource" target="_blank" rel="noopener noreferrer" hidden></a>
-        </div>
-        <div>
-          <p class="eyebrow">ESPÈCE CONFIRMÉE</p>
-          <h1 id="speciesCommonName" class="speciesTitle"></h1>
-          <a id="speciesScientificName" class="scientific scientificLink large" target="_blank" rel="noopener"></a>
-          <div id="speciesMeta" class="metaRow"></div>
-        </div>
-      </section>
-
-      <section class="card">
-        <div class="sectionHead">
-          <div>
-            <h2>Vos captures</h2>
-          </div>
-        </div>
-        <div id="speciesPhotoList" class="speciesPhotoList"></div>
-      </section>
-
-      <section class="card">
-        <h2>Notes</h2>
-        <textarea id="speciesNote" class="noteInput" rows="6" placeholder="Vos remarques sur cette espèce…"></textarea>
-        <button id="saveSpeciesNoteButton" class="secondaryButton standaloneButton" type="button">Enregistrer les notes</button>
-        <p id="speciesNoteStatus" class="statusText" aria-live="polite"></p>
-      </section>
-    </section>
-  </main>
-
-  <template id="photoTemplate">
-    <article class="photoCard">
-      <button class="photoPreviewButton" type="button" aria-label="Recadrer cette photo"><img alt="Photo sélectionnée de la plante" /></button>
-      <div class="photoMetaLine"></div>
-      <div class="photoControls">
-        <select aria-label="Partie de la plante">
-          <option value="auto">Détection automatique</option>
-          <option value="flower">Fleur</option>
-          <option value="leaf">Feuille</option>
-          <option value="fruit">Fruit</option>
-          <option value="bark">Écorce</option>
-        </select>
-        <button class="editPhotoButton" type="button">Recadrer</button>
-        <button class="removeButton" type="button">Retirer</button>
-      </div>
-    </article>
-  </template>
-
-  <dialog id="locationPicker" class="locationPicker">
-    <form method="dialog" class="locationPickerPanel" id="locationPickerForm">
-      <div class="sectionHead">
-        <div>
-          <p class="eyebrow">POSITION DE L’OBSERVATION</p>
-          <h2>Ajouter une position</h2>
-        </div>
-        <button id="cancelLocationPickerButton" class="textButton neutral" type="button">Annuler</button>
-      </div>
-
-      <div class="locationModeButtons" aria-label="Méthode de choix de la position">
-        <button id="locationMapModeButton" class="secondaryButton active" type="button">Choisir sur la carte</button>
-        <button id="locationAddressModeButton" class="secondaryButton" type="button">Entrer une adresse</button>
-        <button id="locationCurrentButton" class="secondaryButton" type="button">Ma position actuelle</button>
-      </div>
-
-      <section id="locationMapMode" class="locationModePanel">
-        <p class="muted">Touchez la carte à l’endroit de l’observation.</p>
-        <div id="locationPickerMap" class="locationPickerMap" aria-label="Choisir une position sur la carte"></div>
-      </section>
-
-      <section id="locationAddressMode" class="locationModePanel hidden">
-        <label class="fieldLabel" for="locationAddressInput">Adresse ou lieu</label>
-        <div class="locationAddressRow">
-          <input id="locationAddressInput" type="search" placeholder="Ex. Jardin des Plantes, Toulouse" autocomplete="street-address" />
-          <button id="searchLocationAddressButton" class="secondaryButton" type="button">Rechercher</button>
-        </div>
-        <div id="locationSearchResults" class="locationSearchResults"></div>
-      </section>
-
-      <div id="locationSelectionSummary" class="locationSelectionSummary muted">Aucune position sélectionnée.</div>
-      <p id="locationPickerStatus" class="statusText" aria-live="polite"></p>
-      <button id="saveLocationButton" class="primaryButton" type="button" disabled>Enregistrer cette position</button>
-      <p class="locationAttribution muted">Recherche d’adresse : OpenStreetMap / Nominatim.</p>
-    </form>
-  </dialog>
-
-  <dialog id="manualIdentificationDialog" class="manualIdentificationDialog">
-    <form method="dialog" class="manualIdentificationPanel">
-      <div class="sectionHead">
-        <div>
-          <p class="eyebrow">CORRECTION TAXONOMIQUE</p>
-          <h2>Identification manuelle</h2>
-        </div>
-        <button id="cancelManualIdentificationButton" class="textButton neutral" type="button">Annuler</button>
-      </div>
-      <label class="fieldLabel" for="manualScientificName">Nom scientifique *</label>
-      <input id="manualScientificName" class="keyInput" type="text" autocomplete="off" spellcheck="false" placeholder="Ex. Bellis perennis" />
-      <label class="fieldLabel" for="manualCommonName">Nom commun</label>
-      <input id="manualCommonName" class="keyInput" type="text" autocomplete="off" placeholder="Ex. Pâquerette" />
-      <div class="manualTaxonomyGrid">
-        <label>
-          <span class="fieldLabel">Famille</span>
-          <input id="manualFamily" class="keyInput" type="text" autocomplete="off" placeholder="Ex. Asteraceae" />
-        </label>
-        <label>
-          <span class="fieldLabel">Genre</span>
-          <input id="manualGenus" class="keyInput" type="text" autocomplete="off" placeholder="Ex. Bellis" />
-        </label>
-      </div>
-      <p id="manualIdentificationStatus" class="statusText" aria-live="polite"></p>
-      <button id="saveManualIdentificationButton" class="primaryButton" type="button">Utiliser cette identification</button>
-    </form>
-  </dialog>
-
-  <dialog id="illustrationPickerDialog" class="illustrationPickerDialog">
-    <div class="illustrationPickerPanel">
-      <div class="sectionHead">
-        <div>
-          <p class="eyebrow">WIKIMEDIA COMMONS</p>
-          <h2 id="illustrationPickerTitle">Choisir une illustration</h2>
-          <p id="illustrationPickerSubtitle" class="scientific"></p>
-        </div>
-        <button id="illustrationPickerCancel" class="textButton neutral" type="button">Fermer</button>
-      </div>
-      <p id="illustrationPickerStatus" class="statusText" aria-live="polite"></p>
-      <div id="illustrationPickerProgress" class="illustrationProgress" hidden><div id="illustrationPickerProgressBar"></div></div>
-      <div id="illustrationPickerGrid" class="illustrationPickerGrid"></div>
-      <button id="illustrationPickerMore" class="secondaryButton illustrationMoreButton" type="button" hidden>Afficher 6 autres</button>
-    </div>
-  </dialog>
-
-  <dialog id="illustrationEditorDialog" class="illustrationEditorDialog">
-    <div class="illustrationEditorPanel">
-      <div class="sectionHead">
-        <div>
-          <p class="eyebrow">ILLUSTRATION BOTANIQUE</p>
-          <h2>Ajuster l’illustration</h2>
-        </div>
-        <button id="illustrationEditorCancel" class="textButton neutral" type="button">Annuler</button>
-      </div>
-      <div class="illustrationEditorCanvasWrap"><canvas id="illustrationEditorCanvas" width="800" height="1000"></canvas></div>
-      <label class="rangeField">Taille / zoom <input id="illustrationEditorZoom" type="range" min="1" max="3" step="0.01" value="1"></label>
-      <div class="illustrationEditorActions">
-        <button id="illustrationEditorChange" class="secondaryButton illustrationChangeButton" type="button">Changer d’illustration</button>
-        <button id="illustrationEditorReset" class="secondaryButton" type="button">Réinitialiser</button>
-        <button id="illustrationEditorSave" class="illustrationConfirmButton" type="button" aria-label="Valider l’ajustement" title="Valider">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.2 4.2L19 7"/></svg>
-        </button>
-      </div>
-      <p class="muted">Faites glisser l’image pour la repositionner dans la fiche.</p>
-      <p id="illustrationEditorStatus" class="statusText" aria-live="polite"></p>
-    </div>
-  </dialog>
-
-  <dialog id="photoEditor" class="photoEditor">
-    <form method="dialog" class="editorPanel" id="editorForm">
-      <div class="sectionHead">
-        <div>
-          <p class="eyebrow">ÉDITION DE LA PHOTO</p>
-          <h2>Tourner et recadrer</h2>
-        </div>
-        <button id="cancelEditorButton" class="textButton neutral" type="button">Annuler</button>
-      </div>
-      <div class="editorCanvasWrap"><canvas id="editorCanvas" width="800" height="600"></canvas></div>
-      <div class="editorToolbar">
-        <button id="rotateLeftButton" class="secondaryButton" type="button">Tourner à gauche</button>
-        <button id="rotateRightButton" class="secondaryButton" type="button">Tourner à droite</button>
-      </div>
-      <label class="rangeField">Zoom <input id="editorZoom" type="range" min="1" max="3" step="0.01" value="1" /></label>
-      <div class="aspectButtons" aria-label="Format de recadrage">
-        <button type="button" data-aspect="original">Original</button>
-        <button type="button" data-aspect="4:3" class="active">4:3</button>
-        <button type="button" data-aspect="1:1">Carré</button>
-      </div>
-      <p class="muted">Faites glisser l’image pour choisir le cadrage.</p>
-      <button id="saveEditorButton" class="primaryButton" type="button">Appliquer</button>
-    </form>
-  </dialog>
-
-  <canvas id="confettiCanvas" class="confettiCanvas" aria-hidden="true"></canvas>
-
-  <script src="https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/full.umd.js" defer></script>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="" defer></script>
-  <script src="./app.js?v=17" defer></script>
-  <script src="./illustration-picker.js?v=17" defer></script>
-</body>
-</html>
+:root {
+  color-scheme: light;
+  --bg: #f3f5f0;
+  --card: #fbfcf9;
+  --ink: #18221c;
+  --muted: #68736b;
+  --line: #d9e0d9;
+  --green: #244d36;
+  --green-soft: #e1ebe3;
+  --amber-soft: #f5ead1;
+  --rose-soft: #f2dfe2;
+  --shadow: 0 12px 35px rgba(26, 42, 31, .08);
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+button, input, select { font: inherit; }
+button, select, input { -webkit-tap-highlight-color: transparent; }
+.lab-shell { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 42px 0 80px; }
+.lab-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 24px; }
+.eyebrow { margin: 0 0 7px; color: var(--green); text-transform: uppercase; letter-spacing: .13em; font-size: .75rem; font-weight: 760; }
+h1, h2, p { margin-top: 0; }
+h1 { max-width: 760px; margin-bottom: 10px; font-family: Georgia, "Times New Roman", serif; font-size: clamp(2rem, 4vw, 3.4rem); font-weight: 500; line-height: 1.02; }
+h2 { margin-bottom: 8px; font-size: 1.12rem; }
+.intro, .weights-panel p { color: var(--muted); margin-bottom: 0; }
+.back-link, .text-button { color: var(--green); text-decoration: none; font-weight: 650; white-space: nowrap; }
+.panel { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 20px; box-shadow: var(--shadow); margin-bottom: 18px; }
+.query-panel { display: flex; align-items: flex-end; gap: 12px; }
+.field { display: grid; gap: 7px; }
+.field.grow { flex: 1; }
+label { color: #47534a; font-size: .86rem; font-weight: 700; }
+select, input[type="text"] { width: 100%; min-height: 46px; padding: 0 12px; border: 1px solid #c9d2ca; border-radius: 11px; background: white; color: var(--ink); }
+.primary-button, .secondary-button { border: 0; border-radius: 11px; min-height: 46px; padding: 0 18px; cursor: pointer; font-weight: 760; }
+.primary-button { background: var(--green); color: white; }
+.secondary-button { background: var(--green-soft); color: var(--green); }
+.primary-button:disabled { opacity: .55; cursor: wait; }
+.rules-panel { display: grid; grid-template-columns: 1.5fr 1fr; gap: 28px; align-items: center; }
+.rules-panel ol { margin: 8px 0 0; padding-left: 22px; color: #445047; line-height: 1.7; }
+.threshold-control { display: grid; gap: 10px; }
+input[type="range"] { width: 100%; accent-color: var(--green); }
+output { display: inline-block; min-width: 2.2em; color: var(--green); }
+.section-title-row { display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; }
+.text-button { border: 0; background: transparent; padding: 0; cursor: pointer; }
+.weights-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px 22px; margin-top: 18px; }
+.weight-control { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; align-items: center; }
+.weight-control input { grid-column: 1 / -1; }
+.weight-control output { text-align: right; }
+.status-panel { min-height: 74px; display: grid; align-content: center; }
+.status-panel p { margin: 0; color: var(--muted); }
+.progress-track { height: 6px; margin-top: 13px; background: #e3e8e2; border-radius: 999px; overflow: hidden; }
+.progress-bar { width: 0%; height: 100%; background: var(--green); transition: width .2s ease; }
+.metrics-grid { grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 0 0 22px; }
+.metric-card { background: var(--card); border: 1px solid var(--line); border-radius: 15px; padding: 16px; }
+.metric-value { display: block; font: 500 1.55rem Georgia, serif; margin-bottom: 4px; }
+.metric-label { color: var(--muted); font-size: .82rem; }
+.results-heading { margin: 34px 0 14px; align-items: end; }
+.legend { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 12px; color: var(--muted); font-size: .78rem; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
+.preferred-dot { background: #466c4e; }
+.rescue-dot { background: #bd8a2f; }
+.multi-dot { background: #a55865; }
+.results-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.result-card { position: relative; overflow: hidden; background: var(--card); border: 1px solid var(--line); border-radius: 17px; box-shadow: var(--shadow); }
+.result-card.preferred { outline: 2px solid #668a6d; outline-offset: 2px; }
+.result-image-wrap { aspect-ratio: 4 / 5; background: #e8ece7; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+.result-image-wrap img { width: 100%; height: 100%; object-fit: contain; }
+.result-image-wrap.crop-rescue img { object-fit: cover; }
+.rank-badge { position: absolute; left: 10px; top: 10px; min-width: 38px; height: 38px; display: grid; place-items: center; border-radius: 999px; background: rgba(24,34,28,.88); color: white; font-weight: 800; backdrop-filter: blur(6px); }
+.result-body { padding: 14px; }
+.result-title { margin: 0 0 10px; font-size: .9rem; line-height: 1.35; overflow-wrap: anywhere; }
+.badges { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.badge { border-radius: 999px; padding: 4px 7px; font-size: .69rem; font-weight: 760; }
+.badge.preferred { background: var(--green-soft); color: #31563a; }
+.badge.rescue { background: var(--amber-soft); color: #755319; }
+.badge.multi { background: var(--rose-soft); color: #7b3c48; }
+.badge.normal { background: #e8ece8; color: #566159; }
+.score-row { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 9px; }
+.total-score { font: 500 1.35rem Georgia, serif; }
+.feature-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; color: var(--muted); font-size: .73rem; }
+.feature-grid strong { color: var(--ink); font-weight: 740; }
+.other-species { margin: 10px 0 0; color: #7b3c48; font-size: .72rem; line-height: 1.4; }
+.commons-link { display: inline-block; margin-top: 12px; color: var(--green); font-size: .78rem; font-weight: 700; text-decoration: none; }
+.show-more { display: block; margin: 22px auto 0; }
+.methodology-panel { margin-top: 28px; }
+summary { cursor: pointer; font-weight: 760; }
+.methodology-copy { padding-top: 14px; color: var(--muted); line-height: 1.6; }
+.methodology-copy p:last-child { margin-bottom: 0; }
+@media (max-width: 820px) {
+  .lab-shell { width: min(100% - 20px, 760px); padding-top: 24px; }
+  .lab-header, .query-panel, .section-title-row { flex-direction: column; }
+  .query-panel { align-items: stretch; }
+  .rules-panel { grid-template-columns: 1fr; }
+  .weights-grid, .metrics-grid { grid-template-columns: repeat(2, 1fr); }
+  .results-grid { grid-template-columns: repeat(2, 1fr); }
+  .legend { justify-content: flex-start; }
+}
+@media (max-width: 520px) {
+  .weights-grid, .metrics-grid { grid-template-columns: 1fr; }
+  .results-grid { grid-template-columns: 1fr; }
+}

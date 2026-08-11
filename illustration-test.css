@@ -1,104 +1,108 @@
-:root {
-  color-scheme: light;
-  --bg: #f3f5f0;
-  --card: #fbfcf9;
-  --ink: #18221c;
-  --muted: #68736b;
-  --line: #d9e0d9;
-  --green: #244d36;
-  --green-soft: #e1ebe3;
-  --amber-soft: #f5ead1;
-  --rose-soft: #f2dfe2;
-  --shadow: 0 12px 35px rgba(26, 42, 31, .08);
-}
-* { box-sizing: border-box; }
-body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--ink);
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-}
-button, input, select { font: inherit; }
-button, select, input { -webkit-tap-highlight-color: transparent; }
-.lab-shell { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 42px 0 80px; }
-.lab-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 24px; }
-.eyebrow { margin: 0 0 7px; color: var(--green); text-transform: uppercase; letter-spacing: .13em; font-size: .75rem; font-weight: 760; }
-h1, h2, p { margin-top: 0; }
-h1 { max-width: 760px; margin-bottom: 10px; font-family: Georgia, "Times New Roman", serif; font-size: clamp(2rem, 4vw, 3.4rem); font-weight: 500; line-height: 1.02; }
-h2 { margin-bottom: 8px; font-size: 1.12rem; }
-.intro, .weights-panel p { color: var(--muted); margin-bottom: 0; }
-.back-link, .text-button { color: var(--green); text-decoration: none; font-weight: 650; white-space: nowrap; }
-.panel { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 20px; box-shadow: var(--shadow); margin-bottom: 18px; }
-.query-panel { display: flex; align-items: flex-end; gap: 12px; }
-.field { display: grid; gap: 7px; }
-.field.grow { flex: 1; }
-label { color: #47534a; font-size: .86rem; font-weight: 700; }
-select, input[type="text"] { width: 100%; min-height: 46px; padding: 0 12px; border: 1px solid #c9d2ca; border-radius: 11px; background: white; color: var(--ink); }
-.primary-button, .secondary-button { border: 0; border-radius: 11px; min-height: 46px; padding: 0 18px; cursor: pointer; font-weight: 760; }
-.primary-button { background: var(--green); color: white; }
-.secondary-button { background: var(--green-soft); color: var(--green); }
-.primary-button:disabled { opacity: .55; cursor: wait; }
-.rules-panel { display: grid; grid-template-columns: 1.5fr 1fr; gap: 28px; align-items: center; }
-.rules-panel ol { margin: 8px 0 0; padding-left: 22px; color: #445047; line-height: 1.7; }
-.threshold-control { display: grid; gap: 10px; }
-input[type="range"] { width: 100%; accent-color: var(--green); }
-output { display: inline-block; min-width: 2.2em; color: var(--green); }
-.section-title-row { display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; }
-.text-button { border: 0; background: transparent; padding: 0; cursor: pointer; }
-.weights-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px 22px; margin-top: 18px; }
-.weight-control { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; align-items: center; }
-.weight-control input { grid-column: 1 / -1; }
-.weight-control output { text-align: right; }
-.status-panel { min-height: 74px; display: grid; align-content: center; }
-.status-panel p { margin: 0; color: var(--muted); }
-.progress-track { height: 6px; margin-top: 13px; background: #e3e8e2; border-radius: 999px; overflow: hidden; }
-.progress-bar { width: 0%; height: 100%; background: var(--green); transition: width .2s ease; }
-.metrics-grid { grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 0 0 22px; }
-.metric-card { background: var(--card); border: 1px solid var(--line); border-radius: 15px; padding: 16px; }
-.metric-value { display: block; font: 500 1.55rem Georgia, serif; margin-bottom: 4px; }
-.metric-label { color: var(--muted); font-size: .82rem; }
-.results-heading { margin: 34px 0 14px; align-items: end; }
-.legend { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 12px; color: var(--muted); font-size: .78rem; }
-.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
-.preferred-dot { background: #466c4e; }
-.rescue-dot { background: #bd8a2f; }
-.multi-dot { background: #a55865; }
-.results-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
-.result-card { position: relative; overflow: hidden; background: var(--card); border: 1px solid var(--line); border-radius: 17px; box-shadow: var(--shadow); }
-.result-card.preferred { outline: 2px solid #668a6d; outline-offset: 2px; }
-.result-image-wrap { aspect-ratio: 4 / 5; background: #e8ece7; overflow: hidden; display: flex; align-items: center; justify-content: center; }
-.result-image-wrap img { width: 100%; height: 100%; object-fit: contain; }
-.result-image-wrap.crop-rescue img { object-fit: cover; }
-.rank-badge { position: absolute; left: 10px; top: 10px; min-width: 38px; height: 38px; display: grid; place-items: center; border-radius: 999px; background: rgba(24,34,28,.88); color: white; font-weight: 800; backdrop-filter: blur(6px); }
-.result-body { padding: 14px; }
-.result-title { margin: 0 0 10px; font-size: .9rem; line-height: 1.35; overflow-wrap: anywhere; }
-.badges { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
-.badge { border-radius: 999px; padding: 4px 7px; font-size: .69rem; font-weight: 760; }
-.badge.preferred { background: var(--green-soft); color: #31563a; }
-.badge.rescue { background: var(--amber-soft); color: #755319; }
-.badge.multi { background: var(--rose-soft); color: #7b3c48; }
-.badge.normal { background: #e8ece8; color: #566159; }
-.score-row { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 9px; }
-.total-score { font: 500 1.35rem Georgia, serif; }
-.feature-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; color: var(--muted); font-size: .73rem; }
-.feature-grid strong { color: var(--ink); font-weight: 740; }
-.other-species { margin: 10px 0 0; color: #7b3c48; font-size: .72rem; line-height: 1.4; }
-.commons-link { display: inline-block; margin-top: 12px; color: var(--green); font-size: .78rem; font-weight: 700; text-decoration: none; }
-.show-more { display: block; margin: 22px auto 0; }
-.methodology-panel { margin-top: 28px; }
-summary { cursor: pointer; font-weight: 760; }
-.methodology-copy { padding-top: 14px; color: var(--muted); line-height: 1.6; }
-.methodology-copy p:last-child { margin-bottom: 0; }
-@media (max-width: 820px) {
-  .lab-shell { width: min(100% - 20px, 760px); padding-top: 24px; }
-  .lab-header, .query-panel, .section-title-row { flex-direction: column; }
-  .query-panel { align-items: stretch; }
-  .rules-panel { grid-template-columns: 1fr; }
-  .weights-grid, .metrics-grid { grid-template-columns: repeat(2, 1fr); }
-  .results-grid { grid-template-columns: repeat(2, 1fr); }
-  .legend { justify-content: flex-start; }
-}
-@media (max-width: 520px) {
-  .weights-grid, .metrics-grid { grid-template-columns: 1fr; }
-  .results-grid { grid-template-columns: 1fr; }
-}
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#244d36">
+  <title>Laboratoire illustrations — Fleuretmoi</title>
+  <link rel="stylesheet" href="illustration-test.css">
+</head>
+<body>
+  <main class="lab-shell">
+    <header class="lab-header">
+      <div>
+        <p class="eyebrow">Fleuretmoi · laboratoire</p>
+        <h1>Classement des illustrations botaniques</h1>
+        <p class="intro">Cette page est expérimentale. Elle ne modifie pas l’Herbier et n’enregistre aucune illustration.</p>
+      </div>
+      <a class="back-link" href="./index.html">Retour à Fleuretmoi</a>
+    </header>
+
+    <section class="panel query-panel">
+      <div class="field grow">
+        <label for="speciesSelect">Espèce d’étalonnage</label>
+        <select id="speciesSelect">
+          <option value="Malva sylvestris">Malva sylvestris</option>
+          <option value="Raphanus sativus">Raphanus sativus</option>
+          <option value="Nerium oleander">Nerium oleander</option>
+          <option value="Narcissus poeticus">Narcissus poeticus</option>
+          <option value="__custom__">Autre espèce…</option>
+        </select>
+      </div>
+      <div class="field grow custom-field" id="customField" hidden>
+        <label for="customSpecies">Nom scientifique exact</label>
+        <input id="customSpecies" type="text" autocomplete="off" spellcheck="false" placeholder="ex. Papaver rhoeas">
+      </div>
+      <button id="runButton" class="primary-button" type="button">Analyser</button>
+    </section>
+
+    <section class="panel rules-panel">
+      <div class="rules-copy">
+        <h2>Hiérarchie fixe</h2>
+        <ol>
+          <li>Catégorie de l’<strong>espèce exacte</strong>.</li>
+          <li><strong>Botanical illustration</strong> obligatoire.</li>
+          <li>Illustrations où <strong>seule l’espèce demandée</strong> est catégorisée avant les planches multi-espèces.</li>
+          <li>Classement esthétique A/C/D/E/F + préférence portrait.</li>
+          <li>Le potentiel de recadrage n’intervient qu’en <strong>secours</strong>.</li>
+        </ol>
+      </div>
+      <div class="threshold-control">
+        <label for="qualityThreshold">Seuil “bonne image telle quelle” <output id="qualityThresholdValue">58</output></label>
+        <input id="qualityThreshold" type="range" min="35" max="80" value="58" step="1">
+      </div>
+    </section>
+
+    <section class="panel weights-panel">
+      <div class="section-title-row">
+        <div>
+          <h2>Poids esthétiques</h2>
+          <p>Ils ne peuvent jamais compenser les filtres taxonomiques.</p>
+        </div>
+        <button id="resetWeights" class="text-button" type="button">Valeurs initiales</button>
+      </div>
+      <div id="weightsGrid" class="weights-grid"></div>
+    </section>
+
+    <section id="statusPanel" class="panel status-panel" aria-live="polite">
+      <p id="statusText">Choisis une espèce puis lance l’analyse.</p>
+      <div id="progressTrack" class="progress-track" hidden><div id="progressBar" class="progress-bar"></div></div>
+    </section>
+
+    <section id="metricsPanel" class="metrics-grid" hidden></section>
+
+    <section id="resultsSection" hidden>
+      <div class="section-title-row results-heading">
+        <div>
+          <p class="eyebrow" id="resultCategory"></p>
+          <h2>Classement</h2>
+        </div>
+        <div class="legend">
+          <span><i class="dot preferred-dot"></i> référence utilisateur</span>
+          <span><i class="dot rescue-dot"></i> secours / recadrage</span>
+          <span><i class="dot multi-dot"></i> plusieurs espèces</span>
+        </div>
+      </div>
+      <div id="resultsGrid" class="results-grid"></div>
+      <button id="showMoreButton" class="secondary-button show-more" type="button" hidden>Afficher 6 de plus</button>
+    </section>
+
+    <section class="panel methodology-panel">
+      <details>
+        <summary>Ce que mesure actuellement le prototype</summary>
+        <div class="methodology-copy">
+          <p><strong>A · Composition végétale :</strong> occupation du cadre, masse principale, centrage et faible coupure sur les bords.</p>
+          <p><strong>C · Couleur :</strong> chroma réelle du sujet : les gris/noirs restent proches de 0 même sur un scan ancien ou jauni.</p>
+          <p><strong>D · Séparation :</strong> contraste du sujet avec un fond relativement homogène.</p>
+          <p><strong>E · Densité parasite :</strong> pénalité modérée lorsque l’image comporte beaucoup de petites masses séparées du sujet principal.</p>
+          <p><strong>F · Technique :</strong> résolution exploitable pour l’Herbier.</p>
+          <p><strong>Portrait :</strong> bonus léger ; ce n’est jamais un filtre.</p>
+          <p><strong>Recadrage :</strong> le prototype cherche un cadrage portrait virtuel uniquement lorsqu’il manque assez de bonnes images utilisables telles quelles.</p>
+          <p><strong>Doublons :</strong> les copies visuellement quasi identiques sont regroupées et seule la variante la mieux classée est conservée.</p>
+        </div>
+      </details>
+    </section>
+  </main>
+  <script src="illustration-test.js"></script>
+</body>
+</html>
