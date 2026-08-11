@@ -384,7 +384,7 @@
         <button id="illustrationEditorCancel" class="textButton neutral" type="button">Annuler</button>
       </div>
       <div class="illustrationEditorCanvasWrap"><canvas id="illustrationEditorCanvas" width="800" height="1000"></canvas></div>
-      <label class="rangeField">Taille / zoom <input id="illustrationEditorZoom" type="range" min="1" max="3" step="0.01" value="1"></label>
+      <label class="rangeField">Taille / zoom <input id="illustrationEditorZoom" type="range" min="0.2" max="3" step="0.01" value="1"></label>
       <div class="illustrationEditorActions">
         <button id="illustrationEditorChange" class="secondaryButton illustrationChangeButton" type="button">Changer d’illustration</button>
         <button id="illustrationEditorReset" class="secondaryButton" type="button">Réinitialiser</button>
@@ -394,6 +394,22 @@
       </div>
       <p class="muted">Faites glisser l’image pour la repositionner dans la fiche.</p>
       <p id="illustrationEditorStatus" class="statusText" aria-live="polite"></p>
+    </div>
+  </dialog>
+
+
+  <dialog id="speciesPhotoViewer" class="speciesPhotoViewer">
+    <div class="speciesPhotoViewerPanel">
+      <div class="speciesPhotoViewerTopbar">
+        <p class="eyebrow">CAPTURE</p>
+        <button id="speciesPhotoViewerClose" class="textButton neutral" type="button">Fermer</button>
+      </div>
+      <div class="speciesPhotoViewerMedia">
+        <img id="speciesPhotoViewerImage" alt="Capture agrandie de l’observation" />
+      </div>
+      <div class="speciesPhotoViewerActions">
+        <button id="speciesPhotoViewerEdit" class="secondaryButton" type="button">Éditer</button>
+      </div>
     </div>
   </dialog>
 
@@ -426,7 +442,7 @@
 
   <script src="https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/full.umd.js" defer></script>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="" defer></script>
-  <script src="./app.js?v=18" defer></script>
-  <script src="./illustration-picker.js?v=18" defer></script>
+  <script src="./app.js?v=19" defer></script>
+  <script src="./illustration-picker.js?v=19" defer></script>
 </body>
 </html>

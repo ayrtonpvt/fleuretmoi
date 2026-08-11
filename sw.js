@@ -263,6 +263,7 @@ h2 {
 .referencePhotoBlock { margin-top: 18px; }
 .referenceLabel { margin-bottom: 8px; color: var(--muted); font-size: .78rem; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
 .referencePhotoBlock img { width: 100%; max-height: 330px; object-fit: cover; display: block; border-radius: 16px; background: #e7ece8; }
+.verificationSpeciesLink { color: var(--green); font-weight: 700; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; }
 
 .historyCard { overflow: hidden; }
 .historyButton { width: 100%; border: 0; background: transparent; color: inherit; text-align: left; padding: 11px 0; }
@@ -338,8 +339,10 @@ h2 {
 .observationDate { font-size: .8rem; color: var(--muted); }
 .observationPhotos { display: flex; gap: 9px; overflow-x: auto; padding-bottom: 3px; }
 .observationPhotoCard { position: relative; flex: 0 0 auto; }
-.observationPhotoCard img { width: auto; height: 118px; max-width: min(72vw, 260px); border-radius: 13px; object-fit: contain; background: var(--soft); display: block; }
-.photoCropMini { position: absolute; right: 6px; bottom: 6px; border: 0; border-radius: 999px; background: rgba(255,255,255,.92); color: var(--green); font-size: .68rem; font-weight: 800; padding: 6px 8px; box-shadow: 0 2px 8px rgba(0,0,0,.12); }
+.observationPhotoOpen { display: block; border: 0; padding: 0; border-radius: 13px; background: transparent; overflow: hidden; cursor: zoom-in; }
+.observationPhotoOpen:focus-visible { outline: 3px solid rgba(56,107,76,.24); outline-offset: 3px; }
+.observationPhotoCard img { width: auto; height: 118px; max-width: min(72vw, 260px); border-radius: 13px; object-fit: contain; background: var(--soft); display: block; transition: transform .15s ease; }
+.observationPhotoOpen:hover img { transform: scale(1.015); }
 .openObservationButton { border: 0; background: transparent; color: var(--green); font-weight: 700; font-size: .78rem; }
 .observationNote { margin: 10px 0 0; padding: 10px 12px; border-radius: 11px; background: var(--soft-2); color: var(--muted); font-size: .82rem; line-height: 1.45; white-space: pre-wrap; }
 
@@ -532,6 +535,19 @@ html.edgeSwiping body {
   .dataActions > * { width: 100%; }
   .manualTaxonomyGrid { grid-template-columns: 1fr; gap: 0; }
 }
+
+/* Large capture viewer: opening a photo is read-only until Éditer is pressed. */
+.speciesPhotoViewer {
+  width: min(980px, calc(100vw - 22px)); max-height: 94dvh; padding: 0; border: 0; border-radius: 20px; overflow: hidden; background: #fff; color: var(--ink); box-shadow: 0 28px 80px rgba(20,35,25,.28);
+}
+.speciesPhotoViewer::backdrop { background: rgba(13,22,16,.72); backdrop-filter: blur(3px); }
+.speciesPhotoViewerPanel { padding: 16px; max-height: 94dvh; overflow: auto; }
+.speciesPhotoViewerTopbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
+.speciesPhotoViewerTopbar .eyebrow { margin: 0; }
+.speciesPhotoViewerMedia { display: grid; place-items: center; min-height: 260px; max-height: calc(94dvh - 150px); overflow: auto; border-radius: 16px; background: #eef2ee; }
+.speciesPhotoViewerMedia img { display: block; max-width: 100%; max-height: calc(94dvh - 170px); width: auto; height: auto; object-fit: contain; }
+.speciesPhotoViewerActions { display: flex; justify-content: flex-end; margin-top: 12px; }
+.speciesPhotoViewerActions .secondaryButton { min-width: 110px; }
 
 /* Wikimedia botanical illustrations */
 .speciesIllustrationPanel { min-width: 0; }

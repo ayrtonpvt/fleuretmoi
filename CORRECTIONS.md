@@ -19,6 +19,8 @@ const state = {
   historyObjectUrls: [],
   herbariumObjectUrls: [],
   speciesObjectUrls: [],
+  speciesViewerObjectUrls: [],
+  speciesPhotoViewer: null,
   mapObjectUrls: [],
   map: null,
   mapLayer: null,
@@ -1009,9 +1011,28 @@ async function renderCapture(item) {
   if (item.verified) {
     bestScore.innerHTML = checkSvg();
     bestScore.setAttribute("aria-label", "Identification vérifiée");
-    verificationHint.textContent = selection.type === "manual"
-      ? "Identification manuelle confirmée. Vous pouvez encore la corriger ou annuler la validation."
-      : "Cette proposition est confirmée. Vous pouvez encore choisir une autre proposition ou annuler la validation.";
+    verificationHint.innerHTML = "";
+    const confirmedText = selection.type === "manual"
+      ? "Identification manuelle confirmée. "
+      : "Cette proposition est confirmée. ";
+    verificationHint.appendChild(document.createTextNode(confirmedText));
+    if (item.speciesId) {
+      const herbariumLink = document.createElement("a");
+      herbariumLink.href = "#";
+      herbariumLink.className = "verificationSpeciesLink";
+      herbariumLink.textContent = "(voir l’espèce dans l’herbier)";
+      herbariumLink.addEventListener("click", async (event) => {
+        event.preventDefault();
+        await openSpecies(item.speciesId);
+      });
+      verificationHint.appendChild(herbariumLink);
+      verificationHint.appendChild(document.createTextNode(" "));
+    }
+    verificationHint.appendChild(document.createTextNode(
+      selection.type === "manual"
+        ? "Vous pouvez encore la corriger ou annuler la validation."
+        : "Vous pouvez encore choisir une autre proposition ou annuler la validation."
+    ));
   } else {
     bestScore.textContent = selection.type === "manual" ? "OK" : `${Math.round(Number(best.score || 0) * 100)}%`;
     bestScore.setAttribute("aria-label", "Valider cette identification");
@@ -1825,15 +1846,16 @@ async function renderSpecies(species) {
       if (!photo.blob) return;
       const card = document.createElement("div");
       card.className = "observationPhotoCard";
+      const openPhoto = document.createElement("button");
+      openPhoto.type = "button";
+      openPhoto.className = "observationPhotoOpen";
+      openPhoto.setAttribute("aria-label", `Afficher en grand la capture du ${formatDate(observation.captureAt || observation.createdAt)}`);
       const img = document.createElement("img");
       img.src = blobUrl(photo.blob, "speciesObjectUrls");
       img.alt = `Capture du ${formatDate(observation.captureAt || observation.createdAt)}`;
-      const crop = document.createElement("button");
-      crop.type = "button";
-      crop.className = "photoCropMini";
-      crop.textContent = "Recadrer";
-      crop.addEventListener("click", () => openStoredPhotoEditor(observation.id, photoIndex, species.id));
-      card.append(img, crop);
+      openPhoto.appendChild(img);
+      openPhoto.addEventListener("click", () => openSpeciesPhotoViewer(observation.id, photoIndex, species.id, photo.blob));
+      card.appendChild(openPhoto);
       photos.appendChild(card);
     });
     block.append(head, photos);
@@ -1940,6 +1962,33 @@ async function renderMap() {
   if (bounds.length === 1) state.map.setView(bounds[0], 14);
   else if (bounds.length > 1) state.map.fitBounds(bounds, { padding: [35, 35], maxZoom: 15 });
 }
+
+// ----- Agrandissement des captures dans l’Herbier -----
+const speciesPhotoViewerDialog = $("#speciesPhotoViewer");
+const speciesPhotoViewerImage = $("#speciesPhotoViewerImage");
+
+function openSpeciesPhotoViewer(observationId, photoIndex, speciesId, blob) {
+  if (!speciesPhotoViewerDialog || !speciesPhotoViewerImage || !(blob instanceof Blob)) return;
+  clearObjectUrls("speciesViewerObjectUrls");
+  state.speciesPhotoViewer = { observationId, photoIndex, speciesId };
+  speciesPhotoViewerImage.src = blobUrl(blob, "speciesViewerObjectUrls");
+  speciesPhotoViewerDialog.showModal();
+}
+
+function closeSpeciesPhotoViewer() {
+  if (speciesPhotoViewerDialog?.open) speciesPhotoViewerDialog.close();
+  if (speciesPhotoViewerImage) speciesPhotoViewerImage.removeAttribute("src");
+  clearObjectUrls("speciesViewerObjectUrls");
+  state.speciesPhotoViewer = null;
+}
+
+$("#speciesPhotoViewerClose")?.addEventListener("click", closeSpeciesPhotoViewer);
+$("#speciesPhotoViewerEdit")?.addEventListener("click", async () => {
+  const target = state.speciesPhotoViewer ? { ...state.speciesPhotoViewer } : null;
+  if (!target) return;
+  closeSpeciesPhotoViewer();
+  await openStoredPhotoEditor(target.observationId, target.photoIndex, target.speciesId);
+});
 
 // ----- Photo editor -----
 const editorDialog = $("#photoEditor");
@@ -2639,6 +2688,7 @@ function closeDialogFromBackdrop(dialog, closeHandler = null) {
 
 closeDialogFromBackdrop($("#locationPicker"));
 closeDialogFromBackdrop($("#manualIdentificationDialog"));
+closeDialogFromBackdrop($("#speciesPhotoViewer"), closeSpeciesPhotoViewer);
 closeDialogFromBackdrop($("#photoEditor"), closeEditor);
 
 async function init() {

@@ -33,16 +33,32 @@
     status: document.getElementById("illustrationEditorStatus"),
   };
 
-  let pickerState = { species: null, ranked: [], visible: PAGE_STEP, token: 0 };
+  let pickerState = { species: null, ranked: [], visible: PAGE_STEP, token: 0, choosing: false };
   let editorState = null;
   let editorPointer = null;
 
-  picker.cancel?.addEventListener("click", () => picker.dialog?.close());
+  function closeIllustrationPicker() {
+    // Invalide aussi un téléchargement encore en cours : une ancienne sélection
+    // ne doit jamais rouvrir l’éditeur après que l’utilisateur a quitté la fenêtre.
+    pickerState.token += 1;
+    pickerState.choosing = false;
+    if (picker.dialog?.open) picker.dialog.close();
+  }
+
+  picker.cancel?.addEventListener("click", closeIllustrationPicker);
   picker.dialog?.addEventListener("pointerdown", (event) => {
-    if (event.target === picker.dialog) picker.dialog.close();
+    if (event.target === picker.dialog) closeIllustrationPicker();
   });
-  picker.more?.addEventListener("click", () => {
-    pickerState.visible += PAGE_STEP;
+  picker.more?.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!pickerState.ranked.length) return;
+    const nextVisible = Math.min(pickerState.ranked.length, pickerState.visible + PAGE_STEP);
+    if (nextVisible <= pickerState.visible) {
+      picker.more.hidden = true;
+      return;
+    }
+    pickerState.visible = nextVisible;
     renderPickerGrid();
   });
   editor.cancel?.addEventListener("click", closeIllustrationEditor);
@@ -145,7 +161,7 @@
 
   async function openIllustrationPicker(species) {
     if (!picker.dialog) return;
-    pickerState = { species, ranked: [], visible: PAGE_STEP, token: pickerState.token + 1 };
+    pickerState = { species, ranked: [], visible: PAGE_STEP, token: pickerState.token + 1, choosing: false };
     const token = pickerState.token;
     picker.title.textContent = "Choisir une illustration";
     picker.subtitle.textContent = species.scientificNameWithoutAuthor || species.scientificName || "";
@@ -222,12 +238,16 @@
 
   function renderPickerGrid() {
     picker.grid.innerHTML = "";
+    // Ce bouton n’est volontairement jamais laissé en état disabled. Son état
+    // dépend uniquement du nombre de résultats encore disponibles.
     picker.more.disabled = false;
-    const visible = pickerState.ranked.slice(0, pickerState.visible);
+    const visibleCount = Math.min(pickerState.visible, pickerState.ranked.length);
+    const visible = pickerState.ranked.slice(0, visibleCount);
     visible.forEach((candidate, index) => {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "illustrationCandidate";
+      button.disabled = Boolean(pickerState.choosing);
       button.innerHTML = `
         <span class="illustrationCandidateRank">${index + 1}</span>
         <span class="illustrationCandidateImage"><img loading="lazy" src="${escapeAttr(candidate.thumbUrl)}" alt=""></span>
@@ -238,22 +258,26 @@
       button.addEventListener("click", () => chooseCandidate(candidate));
       picker.grid.appendChild(button);
     });
-    picker.more.hidden = pickerState.visible >= pickerState.ranked.length;
+    picker.more.hidden = visibleCount >= pickerState.ranked.length;
   }
 
   async function chooseCandidate(candidate) {
     const species = pickerState.species;
-    if (!species) return;
+    if (!species || pickerState.choosing) return;
+    const token = pickerState.token;
+    pickerState.choosing = true;
+    renderPickerGrid();
     setPickerStatus("Téléchargement d’une version de bonne qualité…");
-    [...picker.grid.querySelectorAll("button")].forEach((b) => { b.disabled = true; });
-    picker.more.disabled = true;
     try {
       const asset = await fetchSelectionAsset(candidate.title);
+      if (token !== pickerState.token) return;
       const response = await fetch(asset.assetUrl, { mode: "cors", credentials: "omit" });
       if (!response.ok) throw new Error(`Téléchargement Wikimedia : HTTP ${response.status}`);
       const sourceBlob = await response.blob();
+      if (token !== pickerState.token) return;
       if (!sourceBlob.size) throw new Error("Le fichier Wikimedia téléchargé est vide.");
-      picker.dialog.close();
+      pickerState.choosing = false;
+      if (picker.dialog?.open) picker.dialog.close();
       await openIllustrationEditor({
         mode: "new",
         species,
@@ -273,10 +297,11 @@
         }
       });
     } catch (error) {
+      if (token !== pickerState.token) return;
       console.error(error);
+      pickerState.choosing = false;
       setPickerStatus(error?.message || String(error), true);
-      [...picker.grid.querySelectorAll("button")].forEach((b) => { b.disabled = false; });
-      picker.more.disabled = false;
+      renderPickerGrid();
     }
   }
 
@@ -290,10 +315,13 @@
     try {
       const image = await loadImageFromBlob(sourceBlob);
       const framing = mode === "existing" ? (metadata?.framing || {}) : {};
-      const zoom = Number.isFinite(Number(framing.zoom)) ? Number(framing.zoom) : 1;
+      const minZoom = illustrationFitZoom(image);
+      const requestedZoom = Number.isFinite(Number(framing.zoom)) ? Number(framing.zoom) : 1;
+      const zoom = Math.max(minZoom, Math.min(Number(editor.zoom.max || 3), requestedZoom));
       const panX = Number.isFinite(Number(framing.panX)) ? Number(framing.panX) : 0;
       const panY = Number.isFinite(Number(framing.panY)) ? Number(framing.panY) : 0;
-      editorState = { mode, species, sourceBlob, metadata, image, zoom, panX, panY };
+      editorState = { mode, species, sourceBlob, metadata, image, zoom, minZoom, panX, panY };
+      editor.zoom.min = String(minZoom);
       editor.zoom.value = String(zoom);
       editor.status.textContent = "";
       drawIllustrationEditor();
@@ -301,6 +329,15 @@
     } catch {
       alert("Cette illustration ne peut pas être ouverte dans l’éditeur de ce navigateur.");
     }
+  }
+
+  function illustrationFitZoom(image) {
+    if (!image?.naturalWidth || !image?.naturalHeight) return 0.25;
+    const cover = Math.max(editor.canvas.width / image.naturalWidth, editor.canvas.height / image.naturalHeight);
+    const contain = Math.min(editor.canvas.width / image.naturalWidth, editor.canvas.height / image.naturalHeight);
+    // Minimum = image entière visible dans le cadre. On autorise donc un vrai
+    // dézoom sans permettre de réduire l’illustration jusqu’à devenir minuscule.
+    return Math.max(0.2, Math.min(1, contain / cover));
   }
 
   function resetIllustrationEditor() {
@@ -623,6 +660,7 @@
     base.pixelWidth = w;
     base.pixelHeight = h;
     base.dhash = computeDHash(img);
+    base.perceptualHashes = computePerceptualHashes(img);
     return base;
   }
 
@@ -721,9 +759,16 @@
     return candidates[0] || null;
   }
 
-  function computeDHash(img) {
+  function computeDHash(img, crop = null) {
     const canvas = document.createElement("canvas"); canvas.width = 9; canvas.height = 8;
-    const ctx = canvas.getContext("2d", { willReadFrequently: true }); ctx.drawImage(img, 0, 0, 9, 8);
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (crop) {
+      const sx = Math.round(img.naturalWidth * crop.x);
+      const sy = Math.round(img.naturalHeight * crop.y);
+      const sw = Math.max(2, Math.round(img.naturalWidth * crop.w));
+      const sh = Math.max(2, Math.round(img.naturalHeight * crop.h));
+      ctx.drawImage(img, sx, sy, Math.min(sw, img.naturalWidth - sx), Math.min(sh, img.naturalHeight - sy), 0, 0, 9, 8);
+    } else ctx.drawImage(img, 0, 0, 9, 8);
     const d = ctx.getImageData(0, 0, 9, 8).data;
     let hash = 0n, bit = 0n;
     for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
@@ -734,14 +779,75 @@
     }
     return hash;
   }
+
+  function computePHash(img, crop = null) {
+    const size = 16, low = 8;
+    const canvas = document.createElement("canvas"); canvas.width = size; canvas.height = size;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (crop) {
+      const sx = Math.round(img.naturalWidth * crop.x);
+      const sy = Math.round(img.naturalHeight * crop.y);
+      const sw = Math.max(2, Math.round(img.naturalWidth * crop.w));
+      const sh = Math.max(2, Math.round(img.naturalHeight * crop.h));
+      ctx.drawImage(img, sx, sy, Math.min(sw, img.naturalWidth - sx), Math.min(sh, img.naturalHeight - sy), 0, 0, size, size);
+    } else ctx.drawImage(img, 0, 0, size, size);
+    const rgba = ctx.getImageData(0, 0, size, size).data;
+    const gray = new Float64Array(size * size);
+    for (let i = 0; i < gray.length; i++) {
+      const j = i * 4;
+      gray[i] = 0.299 * rgba[j] + 0.587 * rgba[j + 1] + 0.114 * rgba[j + 2];
+    }
+    const coeff = [];
+    for (let v = 0; v < low; v++) for (let u = 0; u < low; u++) {
+      let sum = 0;
+      for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+        sum += gray[y * size + x]
+          * Math.cos(((2 * x + 1) * u * Math.PI) / (2 * size))
+          * Math.cos(((2 * y + 1) * v * Math.PI) / (2 * size));
+      }
+      coeff.push(sum);
+    }
+    const threshold = median(coeff.slice(1));
+    let hash = 0n;
+    coeff.forEach((value, index) => { if (value > threshold) hash |= (1n << BigInt(index)); });
+    return hash;
+  }
+
+  function computePerceptualHashes(img) {
+    // Plusieurs cadrages rendent la détection beaucoup plus robuste aux paires
+    // « original / cropped » et aux scans dont seules les marges ont changé.
+    const crops = [
+      null,
+      { x: .05, y: .05, w: .90, h: .90 },
+      { x: .10, y: .10, w: .80, h: .80 },
+      { x: .15, y: .15, w: .70, h: .70 },
+      { x: .06, y: .13, w: .88, h: .76 },
+      { x: .13, y: .06, w: .74, h: .88 },
+    ];
+    return crops.map((crop) => ({ d: computeDHash(img, crop), p: computePHash(img, crop) }));
+  }
+
   function hammingDistance64(a, b) {
     if (typeof a !== "bigint" || typeof b !== "bigint") return 64;
     let x = a ^ b, count = 0;
     while (x) { count += Number(x & 1n); x >>= 1n; }
     return count;
   }
+
+  function minimumPerceptualDistance(a, b) {
+    const aa = a.analysis?.perceptualHashes || [];
+    const bb = b.analysis?.perceptualHashes || [];
+    if (!aa.length || !bb.length) return { p: 64, d: 64 };
+    let p = 64, d = 64;
+    for (const ha of aa) for (const hb of bb) {
+      p = Math.min(p, hammingDistance64(ha.p, hb.p));
+      d = Math.min(d, hammingDistance64(ha.d, hb.d));
+    }
+    return { p, d };
+  }
+
   function titleCore(title) {
-    return normalizeTitle(title).replace(/^file:/, "").replace(/\b(cropped|crop|original|uncropped|retouched|edited|version|scan)\b/g, " ")
+    return normalizeTitle(title).replace(/^file:/, "").replace(/\b(cropped|crop|original|uncropped|retouched|edited|version|scan|restored)\b/g, " ")
       .replace(/\([^)]*\)/g, " ").replace(/\b\d{3,}\b/g, " ").replace(/[^a-zà-öø-ÿ]+/g, " ").replace(/\s+/g, " ").trim();
   }
   function tokenSimilarity(a, b) {
@@ -750,13 +856,27 @@
     let common = 0; aa.forEach((t) => { if (bb.has(t)) common++; });
     return common / Math.max(aa.size, bb.size);
   }
+  function plateMarker(title) {
+    const match = normalizeTitle(title).match(/\b(?:plate|pl\.?|page|fig\.?|figure|tab\.?|taf\.?|tav\.?)\s*([0-9ivxlcdm-]+)/i);
+    return match?.[1] || "";
+  }
   function areNearDuplicates(a, b) {
-    const d = hammingDistance64(a.analysis?.dhash, b.analysis?.dhash);
-    return d <= 6 || (d <= 15 && tokenSimilarity(a.title, b.title) >= 0.72);
+    const { p, d } = minimumPerceptualDistance(a, b);
+    const similarity = tokenSimilarity(a.title, b.title);
+    const markerA = plateMarker(a.title), markerB = plateMarker(b.title);
+    // Deux numéros de planche explicitement différents ne sont fusionnés que
+    // si l’image elle-même est pratiquement identique.
+    if (markerA && markerB && markerA !== markerB) return p <= 3 && d <= 4;
+    if (p <= 4 || d <= 3) return true;
+    if (p <= 7 && d <= 8 && similarity >= 0.18) return true;
+    if (p <= 10 && d <= 12 && similarity >= 0.52) return true;
+    return false;
   }
   function dedupeCandidates(candidates) {
     const out = [];
-    for (const c of candidates) if (!out.some((kept) => areNearDuplicates(c, kept))) out.push(c);
+    for (const candidate of candidates) {
+      if (!out.some((kept) => areNearDuplicates(candidate, kept))) out.push(candidate);
+    }
     return out;
   }
 

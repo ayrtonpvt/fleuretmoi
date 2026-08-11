@@ -346,6 +346,7 @@
     base.pixelWidth = w;
     base.pixelHeight = h;
     base.dhash = computeDHash(img);
+    base.perceptualHashes = computePerceptualHashes(img);
     return base;
   }
 
@@ -557,12 +558,18 @@
     return candidates[0] || null;
   }
 
-  function computeDHash(img) {
+  function computeDHash(img, crop = null) {
     const canvas = document.createElement("canvas");
     canvas.width = 9;
     canvas.height = 8;
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    ctx.drawImage(img, 0, 0, 9, 8);
+    if (crop) {
+      const sx = Math.round(img.naturalWidth * crop.x);
+      const sy = Math.round(img.naturalHeight * crop.y);
+      const sw = Math.max(2, Math.round(img.naturalWidth * crop.w));
+      const sh = Math.max(2, Math.round(img.naturalHeight * crop.h));
+      ctx.drawImage(img, sx, sy, Math.min(sw, img.naturalWidth - sx), Math.min(sh, img.naturalHeight - sy), 0, 0, 9, 8);
+    } else ctx.drawImage(img, 0, 0, 9, 8);
     const d = ctx.getImageData(0, 0, 9, 8).data;
     let hash = 0n;
     let bit = 0n;
@@ -579,6 +586,53 @@
     return hash;
   }
 
+  function computePHash(img, crop = null) {
+    const size = 16, low = 8;
+    const canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (crop) {
+      const sx = Math.round(img.naturalWidth * crop.x);
+      const sy = Math.round(img.naturalHeight * crop.y);
+      const sw = Math.max(2, Math.round(img.naturalWidth * crop.w));
+      const sh = Math.max(2, Math.round(img.naturalHeight * crop.h));
+      ctx.drawImage(img, sx, sy, Math.min(sw, img.naturalWidth - sx), Math.min(sh, img.naturalHeight - sy), 0, 0, size, size);
+    } else ctx.drawImage(img, 0, 0, size, size);
+    const rgba = ctx.getImageData(0, 0, size, size).data;
+    const gray = new Float64Array(size * size);
+    for (let i = 0; i < gray.length; i++) {
+      const j = i * 4;
+      gray[i] = 0.299 * rgba[j] + 0.587 * rgba[j + 1] + 0.114 * rgba[j + 2];
+    }
+    const coeff = [];
+    for (let v = 0; v < low; v++) for (let u = 0; u < low; u++) {
+      let sum = 0;
+      for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+        sum += gray[y * size + x]
+          * Math.cos(((2 * x + 1) * u * Math.PI) / (2 * size))
+          * Math.cos(((2 * y + 1) * v * Math.PI) / (2 * size));
+      }
+      coeff.push(sum);
+    }
+    const threshold = median(coeff.slice(1));
+    let hash = 0n;
+    coeff.forEach((value, index) => { if (value > threshold) hash |= (1n << BigInt(index)); });
+    return hash;
+  }
+
+  function computePerceptualHashes(img) {
+    const crops = [
+      null,
+      { x: .05, y: .05, w: .90, h: .90 },
+      { x: .10, y: .10, w: .80, h: .80 },
+      { x: .15, y: .15, w: .70, h: .70 },
+      { x: .06, y: .13, w: .88, h: .76 },
+      { x: .13, y: .06, w: .74, h: .88 },
+    ];
+    return crops.map((crop) => ({ d: computeDHash(img, crop), p: computePHash(img, crop) }));
+  }
+
   function hammingDistance64(a, b) {
     if (typeof a !== "bigint" || typeof b !== "bigint") return 64;
     let x = a ^ b;
@@ -590,10 +644,22 @@
     return count;
   }
 
+  function minimumPerceptualDistance(a, b) {
+    const aa = a.analysis?.perceptualHashes || [];
+    const bb = b.analysis?.perceptualHashes || [];
+    if (!aa.length || !bb.length) return { p: 64, d: 64 };
+    let p = 64, d = 64;
+    for (const ha of aa) for (const hb of bb) {
+      p = Math.min(p, hammingDistance64(ha.p, hb.p));
+      d = Math.min(d, hammingDistance64(ha.d, hb.d));
+    }
+    return { p, d };
+  }
+
   function titleCore(title) {
     return normalizeTitle(title)
       .replace(/^file:/, "")
-      .replace(/\b(cropped|crop|original|uncropped|retouched|edited|version|scan)\b/g, " ")
+      .replace(/\b(cropped|crop|original|uncropped|retouched|edited|version|scan|restored)\b/g, " ")
       .replace(/\([^)]*\)/g, " ")
       .replace(/\b\d{3,}\b/g, " ")
       .replace(/[^a-zà-öø-ÿ]+/g, " ")
@@ -610,12 +676,20 @@
     return common / Math.max(aa.size, bb.size);
   }
 
+  function plateMarker(title) {
+    const match = normalizeTitle(title).match(/\b(?:plate|pl\.?|page|fig\.?|figure|tab\.?|taf\.?|tav\.?)\s*([0-9ivxlcdm-]+)/i);
+    return match?.[1] || "";
+  }
+
   function areNearDuplicates(a, b) {
-    const distance = hammingDistance64(a.analysis?.dhash, b.analysis?.dhash);
-    if (distance <= 6) return true;
-    // Cropped/original variants can move perceptual bits substantially, so allow
-    // a looser visual threshold only when Commons filenames strongly agree.
-    return distance <= 15 && tokenSimilarity(a.title, b.title) >= 0.72;
+    const { p, d } = minimumPerceptualDistance(a, b);
+    const similarity = tokenSimilarity(a.title, b.title);
+    const markerA = plateMarker(a.title), markerB = plateMarker(b.title);
+    if (markerA && markerB && markerA !== markerB) return p <= 3 && d <= 4;
+    if (p <= 4 || d <= 3) return true;
+    if (p <= 7 && d <= 8 && similarity >= 0.18) return true;
+    if (p <= 10 && d <= 12 && similarity >= 0.52) return true;
+    return false;
   }
 
   function dedupeCandidates(candidates) {
