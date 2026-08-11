@@ -8,6 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="icon" href="./icons/icon-192.png" />
   <link rel="apple-touch-icon" href="./icons/icon-192.png" />
@@ -16,7 +17,13 @@
 </head>
 <body>
   <main class="shell">
-    <div id="homeView">
+    <nav id="mainNavigation" class="mainNavigation" aria-label="Navigation principale">
+      <button type="button" data-view="map">Carte</button>
+      <button type="button" data-view="camera" class="active">Identifier</button>
+      <button type="button" data-view="herbarium">Herbier</button>
+    </nav>
+
+    <section id="cameraView" class="appView">
       <header class="topbar">
         <div>
           <p class="eyebrow">HERBIER PERSONNEL</p>
@@ -47,7 +54,7 @@
       <section class="hero card">
         <div>
           <h2>Identifier une plante</h2>
-          <p>Ajoutez une à cinq photos de la même plante. Une vue nette de la fleur donne généralement le meilleur résultat.</p>
+          <p>Ajoutez une à cinq photos de la même plante. Vous pourrez les tourner et les recadrer avant l’identification.</p>
         </div>
         <div class="photoActions" aria-label="Ajouter des photos de la plante">
           <label class="cameraButton">
@@ -67,6 +74,8 @@
           <span id="photoCount" class="muted"></span>
         </div>
         <div id="photoGrid" class="photoGrid"></div>
+        <label class="fieldLabel" for="draftNote">Note personnelle <span class="muted">(facultatif)</span></label>
+        <textarea id="draftNote" class="noteInput" rows="3" placeholder="Lieu précis, couleur, habitat, détail à retenir…"></textarea>
         <button id="identifyButton" class="primaryButton">Identifier la plante</button>
         <p id="statusText" class="statusText" aria-live="polite"></p>
       </section>
@@ -86,17 +95,56 @@
         <div class="sectionHead">
           <div>
             <h2>Historique</h2>
-            <p class="muted">Vos observations sont conservées localement sur cet appareil.</p>
+            <p class="muted">Toutes vos captures, vérifiées ou non.</p>
           </div>
           <button id="clearHistoryButton" class="textButton" type="button">Effacer</button>
         </div>
         <div id="historyList" class="compactList emptyState">Aucune identification pour le moment.</div>
       </section>
-    </div>
+    </section>
 
-    <div id="captureView" class="hidden">
+    <section id="herbariumView" class="appView hidden">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">HERBIER PERSONNEL</p>
+          <h1>Herbier</h1>
+        </div>
+        <span id="speciesCount" class="countPill">0 espèce</span>
+      </header>
+      <section class="card herbariumTools">
+        <label class="searchField">
+          <span class="srOnly">Rechercher dans l’herbier</span>
+          <input id="herbariumSearch" type="search" placeholder="Rechercher une espèce…" autocomplete="off" />
+        </label>
+        <label class="sortField">
+          <span>Tri</span>
+          <select id="herbariumSort">
+            <option value="alpha">Ordre alphabétique</option>
+            <option value="recent">Dernière capture</option>
+            <option value="first">Première capture</option>
+          </select>
+        </label>
+      </section>
+      <section id="herbariumList" class="herbariumList"></section>
+    </section>
+
+    <section id="mapView" class="appView hidden">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">OBSERVATIONS</p>
+          <h1>Carte</h1>
+        </div>
+        <span id="mapCount" class="countPill">0 capture</span>
+      </header>
+      <section class="card mapCard">
+        <div id="plantMap" class="plantMap" aria-label="Carte interactive des observations"></div>
+        <p id="mapStatus" class="muted mapStatus"></p>
+      </section>
+    </section>
+
+    <section id="captureView" class="appView hidden">
       <header class="detailTopbar">
-        <button id="backButton" class="backButton" type="button" aria-label="Retour à l’herbier">
+        <button id="backCaptureButton" class="backButton" type="button" aria-label="Retour">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
           <span>Retour</span>
         </button>
@@ -113,6 +161,7 @@
         </div>
         <div id="capturePhotoGrid" class="capturePhotoGrid"></div>
         <p id="legacyPhotoNote" class="muted hidden">Cette ancienne identification ne contient pas de photo enregistrée.</p>
+        <div id="captureLocationRow" class="locationRow"></div>
       </section>
 
       <section id="resultSection" class="card resultCard">
@@ -120,10 +169,11 @@
           <div>
             <p class="eyebrow">PROPOSITION</p>
             <h2 id="bestCommonName">Résultat</h2>
-            <p id="bestScientificName" class="scientific"></p>
+            <a id="bestScientificName" class="scientific scientificLink" target="_blank" rel="noopener"></a>
           </div>
           <button id="bestScore" class="scoreRing" type="button" aria-label="Valider cette identification"></button>
         </div>
+        <div id="newSpeciesMessage" class="newSpeciesMessage hidden">Nouvelle espèce !</div>
         <p id="verificationHint" class="verificationHint">Touchez le pourcentage pour confirmer que cette proposition correspond bien à la plante observée.</p>
         <div id="bestMeta" class="metaRow"></div>
         <div id="referencePhotoBlock" class="referencePhotoBlock hidden">
@@ -132,12 +182,60 @@
         </div>
         <div id="alternatives" class="alternatives"></div>
       </section>
-    </div>
+
+      <section class="card">
+        <h2>Note de cette observation</h2>
+        <textarea id="captureNote" class="noteInput" rows="4" placeholder="Ajouter une note…"></textarea>
+        <button id="saveCaptureNoteButton" class="secondaryButton standaloneButton" type="button">Enregistrer la note</button>
+        <p id="captureNoteStatus" class="statusText" aria-live="polite"></p>
+      </section>
+    </section>
+
+    <section id="speciesView" class="appView hidden">
+      <header class="detailTopbar">
+        <button id="backSpeciesButton" class="backButton" type="button" aria-label="Retour à l’herbier">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+          <span>Herbier</span>
+        </button>
+        <p class="eyebrow">FICHE D’ESPÈCE</p>
+      </header>
+
+      <section class="card speciesIdentityCard">
+        <div class="speciesIllustrationPlaceholder" aria-label="Emplacement réservé à une future illustration botanique">
+          <span>Illustration botanique</span>
+          <small>emplacement réservé</small>
+        </div>
+        <div>
+          <p class="eyebrow">ESPÈCE CONFIRMÉE</p>
+          <h1 id="speciesCommonName" class="speciesTitle"></h1>
+          <a id="speciesScientificName" class="scientific scientificLink large" target="_blank" rel="noopener"></a>
+          <div id="speciesMeta" class="metaRow"></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="sectionHead">
+          <div>
+            <h2>Vos captures</h2>
+            <p id="speciesObservationSummary" class="muted"></p>
+          </div>
+        </div>
+        <div id="speciesPhotoList" class="speciesPhotoList"></div>
+      </section>
+
+      <section class="card">
+        <h2>Notes</h2>
+        <textarea id="speciesNote" class="noteInput" rows="6" placeholder="Vos remarques sur cette espèce…"></textarea>
+        <button id="saveSpeciesNoteButton" class="secondaryButton standaloneButton" type="button">Enregistrer les notes</button>
+        <p id="speciesNoteStatus" class="statusText" aria-live="polite"></p>
+      </section>
+    </section>
   </main>
 
   <template id="photoTemplate">
     <article class="photoCard">
-      <img alt="Photo sélectionnée de la plante" />
+      <button class="photoPreviewButton" type="button" aria-label="Recadrer cette photo"><img alt="Photo sélectionnée de la plante" /></button>
+      <div class="photoMetaLine"></div>
       <div class="photoControls">
         <select aria-label="Partie de la plante">
           <option value="auto">Détection automatique</option>
@@ -146,11 +244,41 @@
           <option value="fruit">Fruit</option>
           <option value="bark">Écorce</option>
         </select>
+        <button class="editPhotoButton" type="button">Recadrer</button>
         <button class="removeButton" type="button">Retirer</button>
       </div>
     </article>
   </template>
 
+  <dialog id="photoEditor" class="photoEditor">
+    <form method="dialog" class="editorPanel" id="editorForm">
+      <div class="sectionHead">
+        <div>
+          <p class="eyebrow">ÉDITION DE LA PHOTO</p>
+          <h2>Tourner et recadrer</h2>
+        </div>
+        <button id="cancelEditorButton" class="textButton neutral" type="button">Annuler</button>
+      </div>
+      <div class="editorCanvasWrap"><canvas id="editorCanvas" width="800" height="600"></canvas></div>
+      <div class="editorToolbar">
+        <button id="rotateLeftButton" class="secondaryButton" type="button">Tourner à gauche</button>
+        <button id="rotateRightButton" class="secondaryButton" type="button">Tourner à droite</button>
+      </div>
+      <label class="rangeField">Zoom <input id="editorZoom" type="range" min="1" max="3" step="0.01" value="1" /></label>
+      <div class="aspectButtons" aria-label="Format de recadrage">
+        <button type="button" data-aspect="original">Original</button>
+        <button type="button" data-aspect="4:3" class="active">4:3</button>
+        <button type="button" data-aspect="1:1">Carré</button>
+      </div>
+      <p class="muted">Faites glisser l’image pour choisir le cadrage.</p>
+      <button id="saveEditorButton" class="primaryButton" type="button">Appliquer</button>
+    </form>
+  </dialog>
+
+  <canvas id="confettiCanvas" class="confettiCanvas" aria-hidden="true"></canvas>
+
+  <script src="https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/lite.umd.js" defer></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="" defer></script>
   <script src="./app.js" defer></script>
 </body>
 </html>
