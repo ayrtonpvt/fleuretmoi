@@ -100,6 +100,24 @@
           <button id="clearHistoryButton" class="textButton" type="button">Effacer</button>
         </div>
         <div id="historyList" class="compactList emptyState">Aucune identification pour le moment.</div>
+        <button id="loadMoreHistoryButton" class="secondaryButton standaloneButton hidden" type="button">Afficher plus</button>
+      </section>
+
+      <section class="card dataCard">
+        <div class="sectionHead">
+          <div>
+            <h2>Sauvegarde</h2>
+            <p class="muted">Exportez l’Herbier, les observations et leurs photos dans un fichier local. La clé API n’est jamais incluse.</p>
+          </div>
+        </div>
+        <div class="dataActions">
+          <button id="exportBackupButton" class="secondaryButton" type="button">Exporter une sauvegarde</button>
+          <label class="secondaryButton importBackupButton">
+            Importer une sauvegarde
+            <input id="importBackupInput" type="file" accept="application/json,.json" />
+          </label>
+        </div>
+        <p id="backupStatus" class="statusText" aria-live="polite"></p>
       </section>
     </section>
 
@@ -162,6 +180,14 @@
         <div id="capturePhotoGrid" class="capturePhotoGrid"></div>
         <p id="legacyPhotoNote" class="muted hidden">Cette ancienne identification ne contient pas de photo enregistrée.</p>
         <div id="captureLocationRow" class="locationRow"></div>
+        <div class="captureDateEditor">
+          <label class="fieldLabel" for="captureDateInput">Date et heure de l’observation</label>
+          <div class="captureDateEditorRow">
+            <input id="captureDateInput" type="datetime-local" />
+            <button id="saveCaptureDateButton" class="secondaryButton" type="button">Enregistrer la date</button>
+          </div>
+          <p id="captureDateStatus" class="statusText" aria-live="polite"></p>
+        </div>
       </section>
 
       <section id="resultSection" class="card resultCard">
@@ -175,6 +201,10 @@
         </div>
         <div id="newSpeciesMessage" class="newSpeciesMessage hidden">Nouvelle espèce !</div>
         <p id="verificationHint" class="verificationHint">Touchez le pourcentage pour confirmer que cette proposition correspond bien à la plante observée.</p>
+        <div class="identificationActions">
+          <button id="manualIdentificationButton" class="secondaryButton" type="button">Corriger manuellement</button>
+          <button id="unverifyIdentificationButton" class="textButton hidden" type="button">Annuler la validation</button>
+        </div>
         <div id="bestMeta" class="metaRow"></div>
         <div id="referencePhotoBlock" class="referencePhotoBlock hidden">
           <p class="referenceLabel">Photo de référence</p>
@@ -188,6 +218,12 @@
         <textarea id="captureNote" class="noteInput" rows="4" placeholder="Ajouter une note…"></textarea>
         <button id="saveCaptureNoteButton" class="secondaryButton standaloneButton" type="button">Enregistrer la note</button>
         <p id="captureNoteStatus" class="statusText" aria-live="polite"></p>
+      </section>
+
+      <section class="card dangerZone">
+        <h2>Supprimer cette observation</h2>
+        <p class="muted">La suppression retire aussi ses photos de Fleuretmoi. Si c’est la dernière observation de l’espèce, la fiche correspondante disparaîtra de l’Herbier.</p>
+        <button id="deleteObservationButton" class="dangerButton standaloneButton" type="button">Supprimer définitivement</button>
       </section>
     </section>
 
@@ -284,6 +320,34 @@
       <p id="locationPickerStatus" class="statusText" aria-live="polite"></p>
       <button id="saveLocationButton" class="primaryButton" type="button" disabled>Enregistrer cette position</button>
       <p class="locationAttribution muted">Recherche d’adresse : OpenStreetMap / Nominatim.</p>
+    </form>
+  </dialog>
+
+  <dialog id="manualIdentificationDialog" class="manualIdentificationDialog">
+    <form method="dialog" class="manualIdentificationPanel">
+      <div class="sectionHead">
+        <div>
+          <p class="eyebrow">CORRECTION TAXONOMIQUE</p>
+          <h2>Identification manuelle</h2>
+        </div>
+        <button id="cancelManualIdentificationButton" class="textButton neutral" type="button">Annuler</button>
+      </div>
+      <label class="fieldLabel" for="manualScientificName">Nom scientifique *</label>
+      <input id="manualScientificName" class="keyInput" type="text" autocomplete="off" spellcheck="false" placeholder="Ex. Bellis perennis" />
+      <label class="fieldLabel" for="manualCommonName">Nom commun</label>
+      <input id="manualCommonName" class="keyInput" type="text" autocomplete="off" placeholder="Ex. Pâquerette" />
+      <div class="manualTaxonomyGrid">
+        <label>
+          <span class="fieldLabel">Famille</span>
+          <input id="manualFamily" class="keyInput" type="text" autocomplete="off" placeholder="Ex. Asteraceae" />
+        </label>
+        <label>
+          <span class="fieldLabel">Genre</span>
+          <input id="manualGenus" class="keyInput" type="text" autocomplete="off" placeholder="Ex. Bellis" />
+        </label>
+      </div>
+      <p id="manualIdentificationStatus" class="statusText" aria-live="polite"></p>
+      <button id="saveManualIdentificationButton" class="primaryButton" type="button">Utiliser cette identification</button>
     </form>
   </dialog>
 
