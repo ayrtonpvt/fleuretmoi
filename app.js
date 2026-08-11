@@ -1708,15 +1708,6 @@ async function renderSpecies(species) {
     meta.appendChild(chip);
   });
 
-  const summary = $("#speciesObservationSummary");
-  if (observations.length) {
-    const oldest = observations[observations.length - 1]?.captureAt || observations[observations.length - 1]?.createdAt;
-    const newest = observations[0]?.captureAt || observations[0]?.createdAt;
-    summary.textContent = `${observations.length} observation${observations.length > 1 ? "s" : ""} · première ${formatDate(oldest)} · dernière ${formatDate(newest)}`;
-  } else {
-    summary.textContent = "Aucune observation liée.";
-  }
-
   const list = $("#speciesPhotoList");
   list.innerHTML = "";
   observations.forEach((observation) => {
@@ -1763,6 +1754,9 @@ async function renderSpecies(species) {
 
   $("#speciesNote").value = species.note || "";
   $("#speciesNoteStatus").textContent = "";
+  if (window.FleuretmoiIllustrations?.renderSpeciesIllustration) {
+    await window.FleuretmoiIllustrations.renderSpeciesIllustration(species);
+  }
 }
 
 $("#saveSpeciesNoteButton").addEventListener("click", async () => {
