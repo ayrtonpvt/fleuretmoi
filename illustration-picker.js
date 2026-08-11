@@ -87,7 +87,7 @@
     if (!blob) {
       const placeholder = document.createElement("div");
       placeholder.className = "speciesIllustrationPlaceholderInner";
-      placeholder.innerHTML = '<span>Illustration botanique</span><small>Choisir sur Wikimedia Commons</small>';
+      placeholder.innerHTML = '<span>Illustration botanique</span><small>CHOISIR</small>';
       media.appendChild(placeholder);
       button.setAttribute("aria-label", "Choisir une illustration botanique");
       button.onclick = () => openIllustrationPicker(species);
