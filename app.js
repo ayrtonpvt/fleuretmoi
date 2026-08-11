@@ -1,20 +1,34 @@
 const MAX_PHOTOS = 5;
-// Keep the old database/storage names so the existing API key and history survive the update.
 const DB_NAME = "which-flower-db";
-const DB_VERSION = 2;
-const STORE_HISTORY = "history";
+const DB_VERSION = 3;
+const STORE_HISTORY = "history"; // legacy store kept for migration/compatibility
 const STORE_QUEUE = "queue";
+const STORE_OBSERVATIONS = "observations";
+const STORE_SPECIES = "species";
 const API_KEY_STORAGE = "which-flower-plantnet-api-key";
 const PLANTNET_API_URL = "https://my-api.plantnet.org/v2/identify/all";
 
 const state = {
   photos: [],
-  currentHistoryId: null,
+  currentObservationId: null,
+  currentSpeciesId: null,
+  currentMainView: "camera",
+  captureReturn: { type: "main", value: "camera" },
+  draftNote: "",
   detailObjectUrls: [],
   historyObjectUrls: [],
+  herbariumObjectUrls: [],
+  speciesObjectUrls: [],
+  mapObjectUrls: [],
+  map: null,
+  mapLayer: null,
+  editor: null,
+  editorPointer: null,
+  touchStart: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
+const $$ = (selector) => [...document.querySelectorAll(selector)];
 const cameraInput = $("#cameraInput");
 const galleryInput = $("#galleryInput");
 const photoSection = $("#photoSection");
@@ -29,9 +43,17 @@ const connectionBadge = $("#connectionBadge");
 const setupCard = $("#setupCard");
 const apiKeyInput = $("#apiKeyInput");
 const apiStatus = $("#apiStatus");
-const homeView = $("#homeView");
-const captureView = $("#captureView");
 const bestScore = $("#bestScore");
+const mainNavigation = $("#mainNavigation");
+const draftNote = $("#draftNote");
+
+const views = {
+  camera: $("#cameraView"),
+  herbarium: $("#herbariumView"),
+  map: $("#mapView"),
+  capture: $("#captureView"),
+  species: $("#speciesView"),
+};
 
 function getApiKey() {
   return localStorage.getItem(API_KEY_STORAGE)?.trim() || "";
@@ -61,13 +83,57 @@ $("#saveApiKeyButton").addEventListener("click", async () => {
 function openDb() {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = () => {
+    request.onupgradeneeded = (event) => {
       const db = request.result;
+      const tx = request.transaction;
+
       if (!db.objectStoreNames.contains(STORE_HISTORY)) {
         db.createObjectStore(STORE_HISTORY, { keyPath: "id", autoIncrement: true });
       }
       if (!db.objectStoreNames.contains(STORE_QUEUE)) {
         db.createObjectStore(STORE_QUEUE, { keyPath: "id", autoIncrement: true });
+      }
+      if (!db.objectStoreNames.contains(STORE_OBSERVATIONS)) {
+        const observations = db.createObjectStore(STORE_OBSERVATIONS, { keyPath: "id", autoIncrement: true });
+        observations.createIndex("createdAt", "createdAt", { unique: false });
+        observations.createIndex("captureAt", "captureAt", { unique: false });
+        observations.createIndex("speciesId", "speciesId", { unique: false });
+      }
+      if (!db.objectStoreNames.contains(STORE_SPECIES)) {
+        const species = db.createObjectStore(STORE_SPECIES, { keyPath: "id", autoIncrement: true });
+        species.createIndex("scientificKey", "scientificKey", { unique: true });
+        species.createIndex("lastSeenAt", "lastSeenAt", { unique: false });
+      }
+
+      // Migrate the v2 history once, inside the database upgrade transaction.
+      if (event.oldVersion < 3 && db.objectStoreNames.contains(STORE_HISTORY)) {
+        const oldStore = tx.objectStore(STORE_HISTORY);
+        const newStore = tx.objectStore(STORE_OBSERVATIONS);
+        oldStore.openCursor().onsuccess = (cursorEvent) => {
+          const cursor = cursorEvent.target.result;
+          if (!cursor) return;
+          const legacy = cursor.value;
+          const result = getResultFromLegacy(legacy);
+          const best = result.results?.[0] || {};
+          newStore.add({
+            createdAt: legacy.createdAt || Date.now(),
+            captureAt: legacy.captureAt || legacy.createdAt || Date.now(),
+            dateSource: "ancienne_donnée",
+            verified: Boolean(legacy.verified),
+            verifiedAt: legacy.verifiedAt || null,
+            speciesId: null,
+            commonName: legacy.commonName || best.commonNames?.[0] || best.scientificNameWithoutAuthor || "Identification",
+            scientificName: legacy.scientificName || best.scientificName || "Inconnue",
+            scientificNameWithoutAuthor: best.scientificNameWithoutAuthor || legacy.scientificName || "Inconnue",
+            score: Number(legacy.score ?? best.score ?? 0),
+            result,
+            photos: Array.isArray(legacy.photos) ? legacy.photos : [],
+            location: legacy.location || null,
+            note: legacy.note || "",
+            legacyHistoryId: legacy.id,
+          });
+          cursor.continue();
+        };
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -115,6 +181,16 @@ async function dbGetAll(storeName) {
   });
 }
 
+async function dbGetByIndex(storeName, indexName, value) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, "readonly");
+    const req = tx.objectStore(storeName).index(indexName).get(value);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
 async function dbDelete(storeName, id) {
   const db = await openDb();
   return new Promise((resolve, reject) => {
@@ -145,39 +221,187 @@ function setConnectionUi() {
   }
 }
 
-function addSelectedPhotos(input) {
-  const room = MAX_PHOTOS - state.photos.length;
-  const incoming = [...input.files].slice(0, room);
+function formatDate(timestamp, withTime = false) {
+  if (!timestamp) return "Date inconnue";
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return "Date inconnue";
+  return date.toLocaleString("fr-FR", withTime
+    ? { dateStyle: "long", timeStyle: "short" }
+    : { day: "numeric", month: "short", year: "numeric" });
+}
 
-  incoming.forEach((file) => {
+function normalizeScientificKey(name = "") {
+  return String(name)
+    .trim()
+    .toLocaleLowerCase("fr")
+    .replace(/\s+/g, " ");
+}
+
+function googleImagesUrl(scientificName) {
+  const q = `${scientificName || "plante"} botanique`;
+  return `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(q)}`;
+}
+
+function checkSvg() {
+  return `<svg class="checkIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.3 4.3L19 7.2"/></svg>`;
+}
+
+function clearObjectUrls(key) {
+  state[key].forEach((url) => URL.revokeObjectURL(url));
+  state[key] = [];
+}
+
+function blobUrl(blob, bucket) {
+  if (!blob) return "";
+  const url = URL.createObjectURL(blob);
+  state[bucket].push(url);
+  return url;
+}
+
+function getResultFromLegacy(item) {
+  if (item.result?.results?.length) return item.result;
+  return {
+    results: [{
+      score: Number(item.score || 0),
+      scientificName: item.scientificName || "Inconnue",
+      scientificNameWithoutAuthor: item.scientificName || "Inconnue",
+      commonNames: item.commonName ? [item.commonName] : [],
+      family: "",
+      genus: "",
+      images: [],
+    }],
+  };
+}
+
+function getResultFromObservation(item) {
+  return getResultFromLegacy(item);
+}
+
+function findReferenceImageUrl(best) {
+  const image = best?.images?.[0];
+  if (!image) return "";
+  if (typeof image === "string") return image;
+  if (typeof image.url === "string") return image.url;
+  if (image.url && typeof image.url === "object") {
+    return image.url.m || image.url.o || image.url.s || image.url.original || Object.values(image.url).find((value) => typeof value === "string") || "";
+  }
+  return image.imageUrl || image.urlM || image.urlO || image.urlS || "";
+}
+
+async function extractPhotoMetadata(file, source) {
+  const meta = {
+    capturedAt: Date.now(),
+    dateSource: source === "camera" ? "capture" : "import",
+    location: null,
+  };
+
+  if (source === "gallery" && window.exifr) {
+    try {
+      const exif = await window.exifr.parse(file, ["DateTimeOriginal", "CreateDate", "ModifyDate", "OffsetTimeOriginal"]);
+      const exifDate = exif?.DateTimeOriginal || exif?.CreateDate || exif?.ModifyDate;
+      if (exifDate instanceof Date && !Number.isNaN(exifDate.getTime())) {
+        meta.capturedAt = exifDate.getTime();
+        meta.dateSource = "exif";
+      }
+    } catch {
+      // Some images simply do not contain readable EXIF data.
+    }
+    try {
+      const gps = await window.exifr.gps(file);
+      if (Number.isFinite(gps?.latitude) && Number.isFinite(gps?.longitude)) {
+        meta.location = { latitude: gps.latitude, longitude: gps.longitude, source: "exif" };
+      }
+    } catch {
+      // GPS metadata is optional.
+    }
+  }
+
+  if (source === "camera") {
+    const location = await getCurrentLocation(false);
+    if (location) meta.location = { ...location, source: "appareil" };
+  }
+
+  return meta;
+}
+
+function getCurrentLocation(showErrors = true) {
+  return new Promise((resolve) => {
+    if (!navigator.geolocation) {
+      if (showErrors) statusText.textContent = "La géolocalisation n’est pas disponible sur cet appareil.";
+      resolve(null);
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (position) => resolve({
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+        accuracy: position.coords.accuracy,
+      }),
+      () => {
+        if (showErrors) statusText.textContent = "Position non ajoutée : autorisation refusée ou position indisponible.";
+        resolve(null);
+      },
+      { enableHighAccuracy: false, timeout: 7000, maximumAge: 120000 }
+    );
+  });
+}
+
+async function addSelectedPhotos(input, source) {
+  const selectedFiles = [...input.files];
+  const room = MAX_PHOTOS - state.photos.length;
+  const incoming = selectedFiles.slice(0, room);
+  input.value = "";
+
+  if (!incoming.length) return;
+  statusText.textContent = source === "gallery" ? "Lecture des métadonnées des photos…" : "Préparation de la photo…";
+
+  for (const file of incoming) {
+    const metadata = await extractPhotoMetadata(file, source);
     state.photos.push({
       file,
       organ: "auto",
       preview: URL.createObjectURL(file),
+      source,
+      capturedAt: metadata.capturedAt,
+      dateSource: metadata.dateSource,
+      location: metadata.location,
     });
-  });
-
-  if (input.files.length > room) {
-    statusText.textContent = `Vous pouvez ajouter au maximum ${MAX_PHOTOS} photos de la même plante.`;
   }
 
-  input.value = "";
+  if (incoming.length < selectedFiles.length || room === 0) {
+    statusText.textContent = `Vous pouvez ajouter au maximum ${MAX_PHOTOS} photos de la même plante.`;
+  } else {
+    statusText.textContent = "";
+  }
   renderPhotos();
 }
 
-cameraInput.addEventListener("change", () => addSelectedPhotos(cameraInput));
-galleryInput.addEventListener("change", () => addSelectedPhotos(galleryInput));
+cameraInput.addEventListener("change", () => addSelectedPhotos(cameraInput, "camera"));
+galleryInput.addEventListener("change", () => addSelectedPhotos(galleryInput, "gallery"));
+draftNote.addEventListener("input", () => { state.draftNote = draftNote.value; });
+
+function photoDateLabel(photo) {
+  if (!photo?.capturedAt) return "";
+  const source = photo.dateSource === "exif" ? "date de la photo" : photo.dateSource === "capture" ? "prise maintenant" : "date d’import";
+  return `${formatDate(photo.capturedAt)} · ${source}`;
+}
 
 function renderPhotos() {
   photoGrid.innerHTML = "";
   state.photos.forEach((photo, index) => {
     const node = $("#photoTemplate").content.cloneNode(true);
     const img = node.querySelector("img");
+    const previewButton = node.querySelector(".photoPreviewButton");
     const select = node.querySelector("select");
-    const remove = node.querySelector("button");
+    const edit = node.querySelector(".editPhotoButton");
+    const remove = node.querySelector(".removeButton");
+    const meta = node.querySelector(".photoMetaLine");
     img.src = photo.preview;
     select.value = photo.organ;
+    meta.textContent = photoDateLabel(photo);
     select.addEventListener("change", (event) => { state.photos[index].organ = event.target.value; });
+    previewButton.addEventListener("click", () => openDraftPhotoEditor(index));
+    edit.addEventListener("click", () => openDraftPhotoEditor(index));
     remove.addEventListener("click", () => {
       URL.revokeObjectURL(state.photos[index].preview);
       state.photos.splice(index, 1);
@@ -233,10 +457,7 @@ async function sendIdentification(photos) {
 
   let response;
   try {
-    response = await fetch(`${PLANTNET_API_URL}?${params}`, {
-      method: "POST",
-      body: buildFormData(photos),
-    });
+    response = await fetch(`${PLANTNET_API_URL}?${params}`, { method: "POST", body: buildFormData(photos) });
   } catch (error) {
     const corsHint = navigator.onLine
       ? `Le navigateur n’a pas pu joindre Pl@ntNet. Vérifiez que ${location.origin} est autorisé dans les réglages client/CORS de votre clé.`
@@ -254,11 +475,15 @@ async function sendIdentification(photos) {
 }
 
 function toStoredPhotos(photos) {
-  return photos.map(({ file, organ }) => ({
+  return photos.map(({ file, organ, source, capturedAt, dateSource, location }) => ({
     blob: file,
     name: file.name,
     type: file.type,
     organ,
+    source,
+    capturedAt,
+    dateSource,
+    location: location || null,
   }));
 }
 
@@ -266,12 +491,27 @@ function storedPhotosToFiles(photos = []) {
   return photos.map((p) => ({
     file: new File([p.blob], p.name || "plante.jpg", { type: p.type || "image/jpeg" }),
     organ: p.organ || "auto",
+    source: p.source || "stored",
+    capturedAt: p.capturedAt,
+    dateSource: p.dateSource,
+    location: p.location || null,
   }));
+}
+
+function deriveObservationDate(photos, fallback = Date.now()) {
+  const dates = photos.map((p) => Number(p.capturedAt)).filter((n) => Number.isFinite(n) && n > 0);
+  return dates.length ? Math.min(...dates) : fallback;
+}
+
+function deriveObservationLocation(photos) {
+  const found = photos.find((p) => Number.isFinite(p.location?.latitude) && Number.isFinite(p.location?.longitude));
+  return found ? { ...found.location } : null;
 }
 
 identifyButton.addEventListener("click", async () => {
   if (!state.photos.length) return;
   identifyButton.disabled = true;
+  state.draftNote = draftNote.value;
 
   if (!navigator.onLine) {
     await queueCurrentPhotos();
@@ -291,133 +531,190 @@ identifyButton.addEventListener("click", async () => {
   try {
     const result = await sendIdentification(state.photos);
     const storedPhotos = toStoredPhotos(state.photos);
-    const historyId = await saveResult(result, storedPhotos);
-    state.photos.forEach((photo) => URL.revokeObjectURL(photo.preview));
-    state.photos = [];
-    renderPhotos();
+    const observationId = await saveObservation(result, storedPhotos, {
+      note: state.draftNote,
+      captureAt: deriveObservationDate(state.photos),
+      location: deriveObservationLocation(state.photos),
+    });
+    resetDraftPhotos();
     statusText.textContent = result.remainingIdentificationRequests != null
       ? `${result.remainingIdentificationRequests} identifications Pl@ntNet restantes aujourd’hui.`
       : "Identification terminée.";
-    await renderHistory();
-    await openCapture(historyId);
+    await refreshAllLists();
+    await openCapture(observationId, { type: "main", value: "camera" });
   } catch (error) {
-    if (!navigator.onLine) {
-      await queueCurrentPhotos();
-    } else {
-      statusText.textContent = `Identification impossible : ${error.message}`;
-    }
+    if (!navigator.onLine) await queueCurrentPhotos();
+    else statusText.textContent = `Identification impossible : ${error.message}`;
   } finally {
     identifyButton.disabled = false;
   }
 });
 
+function resetDraftPhotos() {
+  state.photos.forEach((photo) => URL.revokeObjectURL(photo.preview));
+  state.photos = [];
+  state.draftNote = "";
+  draftNote.value = "";
+  renderPhotos();
+}
+
 async function queueCurrentPhotos() {
-  await dbAdd(STORE_QUEUE, { createdAt: Date.now(), photos: toStoredPhotos(state.photos) });
+  const stored = toStoredPhotos(state.photos);
+  await dbAdd(STORE_QUEUE, {
+    createdAt: Date.now(),
+    captureAt: deriveObservationDate(state.photos),
+    location: deriveObservationLocation(state.photos),
+    note: state.draftNote || draftNote.value || "",
+    photos: stored,
+  });
   statusText.textContent = "Observation enregistrée hors connexion. L’identification reprendra au retour du réseau.";
+  resetDraftPhotos();
   await renderQueue();
 }
 
-async function saveResult(result, photos = [], createdAt = Date.now()) {
+async function saveObservation(result, photos = [], options = {}) {
   const best = result.results?.[0];
   if (!best) return null;
-  return dbAdd(STORE_HISTORY, {
-    createdAt,
+  return dbAdd(STORE_OBSERVATIONS, {
+    createdAt: Date.now(),
+    captureAt: options.captureAt || deriveObservationDate(photos),
+    dateSource: photos.find((p) => p.capturedAt === (options.captureAt || deriveObservationDate(photos)))?.dateSource || "capture",
     verified: false,
     verifiedAt: null,
+    speciesId: null,
     commonName: best.commonNames?.[0] || best.scientificNameWithoutAuthor,
     scientificName: best.scientificName,
+    scientificNameWithoutAuthor: best.scientificNameWithoutAuthor || best.scientificName,
     score: best.score,
     result,
     photos,
+    location: options.location || deriveObservationLocation(photos),
+    note: options.note || "",
   });
 }
 
-function clearObjectUrls(key) {
-  state[key].forEach((url) => URL.revokeObjectURL(url));
-  state[key] = [];
-}
+async function ensureSpeciesForObservation(observation) {
+  const result = getResultFromObservation(observation);
+  const best = result.results?.[0];
+  if (!best) return { species: null, isNew: false };
+  const scientificKey = normalizeScientificKey(best.scientificNameWithoutAuthor || best.scientificName);
+  let species = await dbGetByIndex(STORE_SPECIES, "scientificKey", scientificKey);
+  const isNew = !species;
 
-function getResultFromHistory(item) {
-  if (item.result?.results?.length) return item.result;
-  return {
-    results: [{
-      score: Number(item.score || 0),
-      scientificName: item.scientificName || "Inconnue",
-      scientificNameWithoutAuthor: item.scientificName || "Inconnue",
-      commonNames: item.commonName ? [item.commonName] : [],
-      family: "",
-      genus: "",
-      images: [],
-    }],
-  };
-}
-
-function findReferenceImageUrl(best) {
-  const image = best?.images?.[0];
-  if (!image) return "";
-  if (typeof image === "string") return image;
-  if (typeof image.url === "string") return image.url;
-  if (image.url && typeof image.url === "object") {
-    return image.url.m || image.url.o || image.url.s || image.url.original || Object.values(image.url).find((value) => typeof value === "string") || "";
+  if (!species) {
+    species = {
+      scientificKey,
+      scientificName: best.scientificName,
+      scientificNameWithoutAuthor: best.scientificNameWithoutAuthor || best.scientificName,
+      commonName: best.commonNames?.[0] || best.scientificNameWithoutAuthor || best.scientificName,
+      family: best.family || "",
+      genus: best.genus || "",
+      observationIds: [observation.id],
+      firstSeenAt: observation.captureAt || observation.createdAt,
+      lastSeenAt: observation.captureAt || observation.createdAt,
+      note: observation.note || "",
+      illustration: null,
+      createdAt: Date.now(),
+    };
+    species.id = await dbAdd(STORE_SPECIES, species);
+  } else {
+    const ids = new Set(species.observationIds || []);
+    ids.add(observation.id);
+    species.observationIds = [...ids];
+    const obsDate = observation.captureAt || observation.createdAt;
+    species.firstSeenAt = Math.min(species.firstSeenAt || obsDate, obsDate);
+    species.lastSeenAt = Math.max(species.lastSeenAt || obsDate, obsDate);
+    if (!species.note && observation.note) species.note = observation.note;
+    await dbPut(STORE_SPECIES, species);
   }
-  return image.imageUrl || image.urlM || image.urlO || image.urlS || "";
+
+  observation.speciesId = species.id;
+  observation.verified = true;
+  observation.verifiedAt = observation.verifiedAt || Date.now();
+  await dbPut(STORE_OBSERVATIONS, observation);
+  return { species, isNew };
 }
 
-function checkSvg() {
-  return `<svg class="checkIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.3 4.3L19 7.2"/></svg>`;
+async function syncVerifiedSpecies() {
+  const observations = await dbGetAll(STORE_OBSERVATIONS);
+  for (const observation of observations) {
+    if (observation.verified && !observation.speciesId) {
+      await ensureSpeciesForObservation(observation);
+    }
+  }
 }
 
-async function openCapture(id) {
-  const item = await dbGet(STORE_HISTORY, id);
+function hideAllViews() {
+  Object.values(views).forEach((view) => view.classList.add("hidden"));
+}
+
+async function showMainView(name) {
+  if (!["camera", "herbarium", "map"].includes(name)) name = "camera";
+  hideAllViews();
+  views[name].classList.remove("hidden");
+  mainNavigation.classList.remove("hidden");
+  state.currentMainView = name;
+  $$("#mainNavigation [data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === name));
+  window.scrollTo({ top: 0, behavior: "instant" });
+  if (name === "herbarium") await renderHerbarium();
+  if (name === "map") {
+    await renderMap();
+    setTimeout(() => state.map?.invalidateSize(), 50);
+  }
+}
+
+$$("#mainNavigation [data-view]").forEach((button) => button.addEventListener("click", () => showMainView(button.dataset.view)));
+
+async function openCapture(id, returnTarget = { type: "main", value: state.currentMainView }) {
+  const item = await dbGet(STORE_OBSERVATIONS, id);
   if (!item) return;
-  state.currentHistoryId = id;
-  renderCapture(item);
-  homeView.classList.add("hidden");
-  captureView.classList.remove("hidden");
+  state.currentObservationId = id;
+  state.captureReturn = returnTarget;
+  await renderCapture(item);
+  hideAllViews();
+  views.capture.classList.remove("hidden");
+  mainNavigation.classList.add("hidden");
   window.scrollTo({ top: 0, behavior: "instant" });
 }
 
-function closeCapture() {
-  captureView.classList.add("hidden");
-  homeView.classList.remove("hidden");
-  state.currentHistoryId = null;
+async function closeCapture() {
+  state.currentObservationId = null;
   clearObjectUrls("detailObjectUrls");
-  window.scrollTo({ top: 0, behavior: "instant" });
+  const target = state.captureReturn;
+  if (target?.type === "species" && target.value) await openSpecies(target.value);
+  else await showMainView(target?.value || "camera");
 }
 
-$("#backButton").addEventListener("click", closeCapture);
+$("#backCaptureButton").addEventListener("click", closeCapture);
 
-function renderCapture(item) {
+async function renderCapture(item) {
   clearObjectUrls("detailObjectUrls");
-  const result = getResultFromHistory(item);
+  const result = getResultFromObservation(item);
   const best = result.results?.[0];
   if (!best) return;
 
-  $("#captureDate").textContent = new Date(item.createdAt).toLocaleString("fr-FR", {
-    dateStyle: "long",
-    timeStyle: "short",
-  });
-
+  $("#captureDate").textContent = formatDate(item.captureAt || item.createdAt, true);
   const capturePhotoGrid = $("#capturePhotoGrid");
   capturePhotoGrid.innerHTML = "";
   const photos = Array.isArray(item.photos) ? item.photos : [];
   $("#legacyPhotoNote").classList.toggle("hidden", photos.length > 0);
   photos.forEach((photo, index) => {
     if (!photo.blob) return;
-    const url = URL.createObjectURL(photo.blob);
-    state.detailObjectUrls.push(url);
     const img = document.createElement("img");
-    img.src = url;
+    img.src = blobUrl(photo.blob, "detailObjectUrls");
     img.alt = `Photo ${index + 1} de l’observation`;
     img.loading = "lazy";
     capturePhotoGrid.appendChild(img);
   });
 
   $("#bestCommonName").textContent = best.commonNames?.[0] || best.scientificNameWithoutAuthor;
-  $("#bestScientificName").textContent = best.scientificName;
+  const scientificLink = $("#bestScientificName");
+  scientificLink.textContent = best.scientificName;
+  scientificLink.href = googleImagesUrl(best.scientificNameWithoutAuthor || best.scientificName);
 
   const verificationLabel = $("#verificationLabel");
   const verificationHint = $("#verificationHint");
+  $("#newSpeciesMessage").classList.add("hidden");
   verificationLabel.textContent = item.verified ? "Vérifiée" : "Non vérifiée";
   verificationLabel.classList.toggle("verified", Boolean(item.verified));
   bestScore.classList.toggle("verified", Boolean(item.verified));
@@ -434,14 +731,12 @@ function renderCapture(item) {
 
   const meta = $("#bestMeta");
   meta.innerHTML = "";
-  [best.family && `Famille : ${best.family}`, best.genus && `Genre : ${best.genus}`]
-    .filter(Boolean)
-    .forEach((text) => {
-      const chip = document.createElement("span");
-      chip.className = "metaChip";
-      chip.textContent = text;
-      meta.appendChild(chip);
-    });
+  [best.family && `Famille : ${best.family}`, best.genus && `Genre : ${best.genus}`].filter(Boolean).forEach((text) => {
+    const chip = document.createElement("span");
+    chip.className = "metaChip";
+    chip.textContent = text;
+    meta.appendChild(chip);
+  });
 
   const referencePhotoBlock = $("#referencePhotoBlock");
   const referencePhoto = $("#referencePhoto");
@@ -461,29 +756,92 @@ function renderCapture(item) {
   result.results.slice(1).forEach((candidate) => {
     const row = document.createElement("div");
     row.className = "altRow";
-    row.innerHTML = `
-      <div><div class="altName"></div><div class="altScientific"></div></div>
-      <div class="altScore">${Math.round(candidate.score * 100)}%</div>`;
-    row.querySelector(".altName").textContent = candidate.commonNames?.[0] || candidate.scientificNameWithoutAuthor;
-    row.querySelector(".altScientific").textContent = candidate.scientificName;
+    const left = document.createElement("div");
+    const common = document.createElement("div");
+    common.className = "altName";
+    common.textContent = candidate.commonNames?.[0] || candidate.scientificNameWithoutAuthor;
+    const scientific = document.createElement("a");
+    scientific.className = "altScientific scientificLink";
+    scientific.textContent = candidate.scientificName;
+    scientific.href = googleImagesUrl(candidate.scientificNameWithoutAuthor || candidate.scientificName);
+    scientific.target = "_blank";
+    scientific.rel = "noopener";
+    const score = document.createElement("div");
+    score.className = "altScore";
+    score.textContent = `${Math.round(candidate.score * 100)}%`;
+    left.append(common, scientific);
+    row.append(left, score);
     alternatives.appendChild(row);
   });
+
+  $("#captureNote").value = item.note || "";
+  $("#captureNoteStatus").textContent = "";
+  renderCaptureLocation(item);
+}
+
+function renderCaptureLocation(item) {
+  const row = $("#captureLocationRow");
+  row.innerHTML = "";
+  if (Number.isFinite(item.location?.latitude) && Number.isFinite(item.location?.longitude)) {
+    const text = document.createElement("span");
+    text.className = "locationText";
+    text.textContent = `Position enregistrée · ${item.location.latitude.toFixed(5)}, ${item.location.longitude.toFixed(5)}`;
+    row.appendChild(text);
+    return;
+  }
+  const text = document.createElement("span");
+  text.className = "locationText";
+  text.textContent = "Aucune position associée à cette observation.";
+  const button = document.createElement("button");
+  button.className = "secondaryButton";
+  button.type = "button";
+  button.textContent = "Ajouter ma position actuelle";
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    const locationData = await getCurrentLocation(true);
+    button.disabled = false;
+    if (!locationData) return;
+    item.location = { ...locationData, source: "ajout_manuel" };
+    await dbPut(STORE_OBSERVATIONS, item);
+    renderCaptureLocation(item);
+    await renderMap();
+  });
+  row.append(text, button);
 }
 
 bestScore.addEventListener("click", async () => {
-  if (!state.currentHistoryId) return;
-  const item = await dbGet(STORE_HISTORY, state.currentHistoryId);
+  if (!state.currentObservationId) return;
+  const item = await dbGet(STORE_OBSERVATIONS, state.currentObservationId);
   if (!item || item.verified) return;
-  item.verified = true;
-  item.verifiedAt = Date.now();
-  await dbPut(STORE_HISTORY, item);
-  renderCapture(item);
-  await renderHistory();
+  const { isNew } = await ensureSpeciesForObservation(item);
+  const updated = await dbGet(STORE_OBSERVATIONS, item.id);
+  await renderCapture(updated);
+  if (isNew) {
+    $("#newSpeciesMessage").classList.remove("hidden");
+    launchConfetti();
+  }
+  await refreshAllLists();
+});
+
+$("#saveCaptureNoteButton").addEventListener("click", async () => {
+  if (!state.currentObservationId) return;
+  const item = await dbGet(STORE_OBSERVATIONS, state.currentObservationId);
+  if (!item) return;
+  item.note = $("#captureNote").value.trim();
+  await dbPut(STORE_OBSERVATIONS, item);
+  if (item.speciesId) {
+    const species = await dbGet(STORE_SPECIES, item.speciesId);
+    if (species && !species.note && item.note) {
+      species.note = item.note;
+      await dbPut(STORE_SPECIES, species);
+    }
+  }
+  $("#captureNoteStatus").textContent = "Note enregistrée.";
 });
 
 async function renderHistory() {
   clearObjectUrls("historyObjectUrls");
-  const rows = (await dbGetAll(STORE_HISTORY)).sort((a, b) => b.createdAt - a.createdAt).slice(0, 50);
+  const rows = (await dbGetAll(STORE_OBSERVATIONS)).sort((a, b) => (b.captureAt || b.createdAt) - (a.captureAt || a.createdAt)).slice(0, 60);
   historyList.innerHTML = "";
   historyList.classList.toggle("emptyState", rows.length === 0);
   if (!rows.length) {
@@ -501,15 +859,11 @@ async function renderHistory() {
     media.className = "historyMedia";
     const photo = item.photos?.[0];
     if (photo?.blob) {
-      const url = URL.createObjectURL(photo.blob);
-      state.historyObjectUrls.push(url);
       const img = document.createElement("img");
-      img.src = url;
+      img.src = blobUrl(photo.blob, "historyObjectUrls");
       img.alt = "";
       media.appendChild(img);
-    } else {
-      media.classList.add("historyMediaEmpty");
-    }
+    } else media.classList.add("historyMediaEmpty");
 
     const content = document.createElement("div");
     content.className = "historyContent";
@@ -518,8 +872,8 @@ async function renderHistory() {
     name.textContent = item.commonName || item.scientificName || "Identification";
     const meta = document.createElement("div");
     meta.className = "historyMeta";
-    const date = new Date(item.createdAt).toLocaleDateString("fr-FR", { day: "numeric", month: "short", year: "numeric" });
-    meta.textContent = `${item.scientificName || ""}${item.scientificName ? " · " : ""}${date}`;
+    const date = formatDate(item.captureAt || item.createdAt);
+    meta.textContent = `${item.scientificNameWithoutAuthor || item.scientificName || ""}${item.scientificName ? " · " : ""}${date}`;
     content.append(name, meta);
 
     const status = document.createElement("span");
@@ -533,7 +887,7 @@ async function renderHistory() {
     }
 
     row.append(media, content, status);
-    row.addEventListener("click", () => openCapture(item.id));
+    row.addEventListener("click", () => openCapture(item.id, { type: "main", value: "camera" }));
     historyList.appendChild(row);
   });
 }
@@ -551,7 +905,7 @@ async function renderQueue() {
     const row = document.createElement("div");
     row.className = "queueRow";
     const count = item.photos.length;
-    row.innerHTML = `<span>${count} photo${count > 1 ? "s" : ""}</span><span class="muted">En attente de connexion</span>`;
+    row.innerHTML = `<span>${count} photo${count > 1 ? "s" : ""} · ${formatDate(item.captureAt || item.createdAt)}</span><span class="muted">En attente de connexion</span>`;
     queueList.appendChild(row);
   });
 }
@@ -563,20 +917,560 @@ async function processQueue() {
     const photos = storedPhotosToFiles(item.photos);
     try {
       const result = await sendIdentification(photos);
-      await saveResult(result, item.photos, item.createdAt);
+      await saveObservation(result, item.photos, {
+        captureAt: item.captureAt || deriveObservationDate(item.photos, item.createdAt),
+        location: item.location || deriveObservationLocation(item.photos),
+        note: item.note || "",
+      });
       await dbDelete(STORE_QUEUE, item.id);
     } catch {
       break;
     }
   }
-  await renderQueue();
-  await renderHistory();
+  await refreshAllLists();
 }
 
+async function getSpeciesObservations(species) {
+  const ids = new Set(species?.observationIds || []);
+  const observations = await dbGetAll(STORE_OBSERVATIONS);
+  return observations
+    .filter((obs) => ids.has(obs.id) || obs.speciesId === species.id)
+    .sort((a, b) => (b.captureAt || b.createdAt) - (a.captureAt || a.createdAt));
+}
+
+async function renderHerbarium() {
+  clearObjectUrls("herbariumObjectUrls");
+  let speciesRows = await dbGetAll(STORE_SPECIES);
+  const query = $("#herbariumSearch").value.trim().toLocaleLowerCase("fr");
+  const sort = $("#herbariumSort").value;
+
+  if (query) {
+    speciesRows = speciesRows.filter((species) => [species.commonName, species.scientificName, species.family, species.genus]
+      .filter(Boolean)
+      .some((value) => value.toLocaleLowerCase("fr").includes(query)));
+  }
+
+  if (sort === "recent") speciesRows.sort((a, b) => (b.lastSeenAt || 0) - (a.lastSeenAt || 0));
+  else if (sort === "first") speciesRows.sort((a, b) => (b.firstSeenAt || 0) - (a.firstSeenAt || 0));
+  else speciesRows.sort((a, b) => (a.commonName || a.scientificName).localeCompare(b.commonName || b.scientificName, "fr", { sensitivity: "base" }));
+
+  const allSpecies = await dbGetAll(STORE_SPECIES);
+  $("#speciesCount").textContent = `${allSpecies.length} espèce${allSpecies.length > 1 ? "s" : ""}`;
+  const list = $("#herbariumList");
+  list.innerHTML = "";
+
+  if (!speciesRows.length) {
+    const empty = document.createElement("div");
+    empty.className = "card herbariumEmpty";
+    empty.textContent = query ? "Aucune espèce ne correspond à cette recherche." : "Votre herbier est vide. Confirmez une première identification pour y ajouter une espèce.";
+    list.appendChild(empty);
+    return;
+  }
+
+  for (const species of speciesRows) {
+    const observations = await getSpeciesObservations(species);
+    const card = document.createElement("article");
+    card.className = "card speciesCard";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "speciesCardButton";
+    button.setAttribute("aria-label", `Ouvrir ${species.commonName}`);
+    button.addEventListener("click", () => openSpecies(species.id));
+
+    const inner = document.createElement("div");
+    inner.className = "speciesCard";
+    const thumbs = document.createElement("div");
+    thumbs.className = "speciesThumbs";
+    const photoBlobs = observations.flatMap((obs) => (obs.photos || []).map((p) => p.blob).filter(Boolean)).slice(0, 3);
+    if (photoBlobs.length) {
+      photoBlobs.forEach((blob) => {
+        const img = document.createElement("img");
+        img.className = "speciesThumb";
+        img.src = blobUrl(blob, "herbariumObjectUrls");
+        img.alt = "";
+        thumbs.appendChild(img);
+      });
+    } else {
+      const placeholder = document.createElement("div");
+      placeholder.className = "speciesThumbPlaceholder";
+      placeholder.textContent = "Flore";
+      thumbs.appendChild(placeholder);
+    }
+
+    const text = document.createElement("div");
+    const title = document.createElement("h2");
+    title.textContent = species.commonName || species.scientificNameWithoutAuthor;
+    const scientific = document.createElement("div");
+    scientific.className = "scientific";
+    scientific.textContent = species.scientificName;
+    const meta = document.createElement("div");
+    meta.className = "speciesCardMeta";
+    const last = observations[0]?.captureAt || species.lastSeenAt;
+    meta.textContent = `${observations.length} observation${observations.length > 1 ? "s" : ""} · dernière capture ${formatDate(last)}`;
+    text.append(title, scientific, meta);
+    inner.append(thumbs, text);
+    button.appendChild(inner);
+    card.appendChild(button);
+    list.appendChild(card);
+  }
+}
+
+$("#herbariumSearch").addEventListener("input", renderHerbarium);
+$("#herbariumSort").addEventListener("change", renderHerbarium);
+
+async function openSpecies(id) {
+  const species = await dbGet(STORE_SPECIES, id);
+  if (!species) return;
+  state.currentSpeciesId = id;
+  await renderSpecies(species);
+  hideAllViews();
+  views.species.classList.remove("hidden");
+  mainNavigation.classList.add("hidden");
+  window.scrollTo({ top: 0, behavior: "instant" });
+}
+
+$("#backSpeciesButton").addEventListener("click", async () => {
+  state.currentSpeciesId = null;
+  clearObjectUrls("speciesObjectUrls");
+  await showMainView("herbarium");
+});
+
+async function renderSpecies(species) {
+  clearObjectUrls("speciesObjectUrls");
+  const observations = await getSpeciesObservations(species);
+  $("#speciesCommonName").textContent = species.commonName || species.scientificNameWithoutAuthor;
+  const scientific = $("#speciesScientificName");
+  scientific.textContent = species.scientificName;
+  scientific.href = googleImagesUrl(species.scientificNameWithoutAuthor || species.scientificName);
+
+  const meta = $("#speciesMeta");
+  meta.innerHTML = "";
+  [species.family && `Famille : ${species.family}`, species.genus && `Genre : ${species.genus}`].filter(Boolean).forEach((text) => {
+    const chip = document.createElement("span");
+    chip.className = "metaChip";
+    chip.textContent = text;
+    meta.appendChild(chip);
+  });
+
+  $("#speciesObservationSummary").textContent = observations.length
+    ? `${observations.length} observation${observations.length > 1 ? "s" : ""} · du ${formatDate(observations.at(-1)?.captureAt || species.firstSeenAt)} au ${formatDate(observations[0]?.captureAt || species.lastSeenAt)}`
+    : "Aucune capture associée.";
+
+  const list = $("#speciesPhotoList");
+  list.innerHTML = "";
+  observations.forEach((observation) => {
+    const block = document.createElement("article");
+    block.className = "speciesObservation";
+    const head = document.createElement("div");
+    head.className = "observationHeader";
+    const date = document.createElement("span");
+    date.className = "observationDate";
+    date.textContent = formatDate(observation.captureAt || observation.createdAt, true);
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "openObservationButton";
+    open.textContent = "Voir l’observation";
+    open.addEventListener("click", () => openCapture(observation.id, { type: "species", value: species.id }));
+    head.append(date, open);
+
+    const photos = document.createElement("div");
+    photos.className = "observationPhotos";
+    (observation.photos || []).forEach((photo, photoIndex) => {
+      if (!photo.blob) return;
+      const card = document.createElement("div");
+      card.className = "observationPhotoCard";
+      const img = document.createElement("img");
+      img.src = blobUrl(photo.blob, "speciesObjectUrls");
+      img.alt = `Capture du ${formatDate(observation.captureAt || observation.createdAt)}`;
+      const crop = document.createElement("button");
+      crop.type = "button";
+      crop.className = "photoCropMini";
+      crop.textContent = "Recadrer";
+      crop.addEventListener("click", () => openStoredPhotoEditor(observation.id, photoIndex, species.id));
+      card.append(img, crop);
+      photos.appendChild(card);
+    });
+    block.append(head, photos);
+    if (observation.note) {
+      const observationNote = document.createElement("p");
+      observationNote.className = "observationNote";
+      observationNote.textContent = observation.note;
+      block.appendChild(observationNote);
+    }
+    list.appendChild(block);
+  });
+
+  $("#speciesNote").value = species.note || "";
+  $("#speciesNoteStatus").textContent = "";
+}
+
+$("#saveSpeciesNoteButton").addEventListener("click", async () => {
+  if (!state.currentSpeciesId) return;
+  const species = await dbGet(STORE_SPECIES, state.currentSpeciesId);
+  if (!species) return;
+  species.note = $("#speciesNote").value.trim();
+  await dbPut(STORE_SPECIES, species);
+  $("#speciesNoteStatus").textContent = "Notes enregistrées.";
+});
+
+function initMap() {
+  if (state.map || !window.L) return;
+  state.map = L.map("plantMap", { zoomControl: true, attributionControl: true }).setView([46.5, 2.5], 5);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributeurs',
+  }).addTo(state.map);
+  state.mapLayer = L.layerGroup().addTo(state.map);
+}
+
+async function renderMap() {
+  clearObjectUrls("mapObjectUrls");
+  const mapStatus = $("#mapStatus");
+  if (!window.L) {
+    mapStatus.textContent = "La bibliothèque de carte n’a pas pu être chargée. Une connexion est nécessaire lors du premier chargement.";
+    return;
+  }
+  initMap();
+  state.mapLayer.clearLayers();
+  const observations = (await dbGetAll(STORE_OBSERVATIONS)).filter((obs) => Number.isFinite(obs.location?.latitude) && Number.isFinite(obs.location?.longitude));
+  const allObservations = await dbGetAll(STORE_OBSERVATIONS);
+  $("#mapCount").textContent = `${observations.length} capture${observations.length > 1 ? "s" : ""}`;
+  const missing = allObservations.length - observations.length;
+  mapStatus.textContent = missing > 0
+    ? `${missing} observation${missing > 1 ? "s" : ""} sans position ne ${missing > 1 ? "sont" : "est"} pas affichée${missing > 1 ? "s" : ""}.`
+    : observations.length ? "Touchez une photo sur la carte pour ouvrir la capture correspondante." : "Aucune observation géolocalisée pour le moment.";
+
+  const bounds = [];
+  for (const observation of observations) {
+    const firstPhoto = observation.photos?.find((p) => p.blob);
+    const photoUrl = firstPhoto?.blob ? blobUrl(firstPhoto.blob, "mapObjectUrls") : "";
+    const markerHtml = photoUrl
+      ? `<div class="photoMarker"><img src="${photoUrl}" alt=""></div>`
+      : `<div class="photoMarker"></div>`;
+    const icon = L.divIcon({ className: "photoMarkerWrap", html: markerHtml, iconSize: [52, 52], iconAnchor: [26, 48] });
+    const marker = L.marker([observation.location.latitude, observation.location.longitude], { icon }).addTo(state.mapLayer);
+    bounds.push([observation.location.latitude, observation.location.longitude]);
+
+    const popup = document.createElement("div");
+    popup.className = "mapPopup";
+    if (photoUrl) {
+      const img = document.createElement("img");
+      img.src = photoUrl;
+      img.alt = "";
+      popup.appendChild(img);
+    }
+    const common = document.createElement("strong");
+    common.textContent = observation.commonName || "Observation";
+    const sci = document.createElement("em");
+    sci.textContent = observation.scientificNameWithoutAuthor || observation.scientificName || "";
+    const date = document.createElement("div");
+    date.className = "muted";
+    date.textContent = formatDate(observation.captureAt || observation.createdAt);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = observation.verified && observation.speciesId ? "Ouvrir dans l’herbier" : "Ouvrir l’observation";
+    button.addEventListener("click", () => {
+      state.map.closePopup();
+      if (observation.verified && observation.speciesId) openSpecies(observation.speciesId);
+      else openCapture(observation.id, { type: "main", value: "map" });
+    });
+    popup.append(common, sci, date, button);
+    marker.bindPopup(popup);
+  }
+
+  if (bounds.length === 1) state.map.setView(bounds[0], 14);
+  else if (bounds.length > 1) state.map.fitBounds(bounds, { padding: [35, 35], maxZoom: 15 });
+}
+
+// ----- Photo editor -----
+const editorDialog = $("#photoEditor");
+const editorCanvas = $("#editorCanvas");
+const editorZoom = $("#editorZoom");
+
+function loadImageFromBlob(blob) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = (error) => { URL.revokeObjectURL(url); reject(error); };
+    img.src = url;
+  });
+}
+
+function rotatedDimensions(img, rotation) {
+  const swapped = Math.abs(rotation % 180) === 90;
+  return swapped ? { width: img.naturalHeight, height: img.naturalWidth } : { width: img.naturalWidth, height: img.naturalHeight };
+}
+
+function setEditorAspect(aspectName) {
+  if (!state.editor) return;
+  state.editor.aspect = aspectName;
+  const img = state.editor.image;
+  const rot = rotatedDimensions(img, state.editor.rotation);
+  let ratio = 4 / 3;
+  if (aspectName === "1:1") ratio = 1;
+  if (aspectName === "original") ratio = rot.width / rot.height;
+  const base = 800;
+  editorCanvas.width = base;
+  editorCanvas.height = Math.max(320, Math.min(1000, Math.round(base / ratio)));
+  state.editor.panX = 0;
+  state.editor.panY = 0;
+  $$(".aspectButtons button").forEach((button) => button.classList.toggle("active", button.dataset.aspect === aspectName));
+  drawEditor();
+}
+
+function clampEditorPan() {
+  if (!state.editor) return;
+  const { image, rotation, zoom } = state.editor;
+  const rot = rotatedDimensions(image, rotation);
+  const baseScale = Math.max(editorCanvas.width / rot.width, editorCanvas.height / rot.height);
+  const displayedW = rot.width * baseScale * zoom;
+  const displayedH = rot.height * baseScale * zoom;
+  const maxX = Math.max(0, (displayedW - editorCanvas.width) / 2);
+  const maxY = Math.max(0, (displayedH - editorCanvas.height) / 2);
+  state.editor.panX = Math.max(-maxX, Math.min(maxX, state.editor.panX));
+  state.editor.panY = Math.max(-maxY, Math.min(maxY, state.editor.panY));
+}
+
+function drawEditor(targetCanvas = editorCanvas, outputScale = 1) {
+  if (!state.editor) return;
+  if (targetCanvas === editorCanvas) clampEditorPan();
+  const canvas = targetCanvas;
+  const ctx = canvas.getContext("2d");
+  const { image, rotation, zoom, panX, panY } = state.editor;
+  const logicalW = editorCanvas.width;
+  const logicalH = editorCanvas.height;
+  const factorX = canvas.width / logicalW;
+  const factorY = canvas.height / logicalH;
+  const rot = rotatedDimensions(image, rotation);
+  const baseScale = Math.max(logicalW / rot.width, logicalH / rot.height);
+  const finalScale = baseScale * zoom;
+
+  ctx.save();
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#16211a";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.translate((logicalW / 2 + panX) * factorX, (logicalH / 2 + panY) * factorY);
+  ctx.rotate(rotation * Math.PI / 180);
+  ctx.scale(finalScale * factorX, finalScale * factorY);
+  ctx.drawImage(image, -image.naturalWidth / 2, -image.naturalHeight / 2);
+  ctx.restore();
+
+  if (canvas === editorCanvas) {
+    ctx.save();
+    ctx.strokeStyle = "rgba(255,255,255,.78)";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([8, 8]);
+    ctx.strokeRect(1, 1, canvas.width - 2, canvas.height - 2);
+    ctx.restore();
+  }
+}
+
+async function openDraftPhotoEditor(index) {
+  const photo = state.photos[index];
+  if (!photo) return;
+  try {
+    const image = await loadImageFromBlob(photo.file);
+    state.editor = { mode: "draft", index, image, rotation: 0, zoom: 1, panX: 0, panY: 0, aspect: "4:3" };
+    editorZoom.value = "1";
+    setEditorAspect("4:3");
+    editorDialog.showModal();
+  } catch {
+    statusText.textContent = "Cette image ne peut pas être ouverte dans l’éditeur de ce navigateur.";
+  }
+}
+
+async function openStoredPhotoEditor(observationId, photoIndex, speciesId) {
+  const observation = await dbGet(STORE_OBSERVATIONS, observationId);
+  const photo = observation?.photos?.[photoIndex];
+  if (!photo?.blob) return;
+  try {
+    const image = await loadImageFromBlob(photo.blob);
+    state.editor = { mode: "stored", observationId, photoIndex, speciesId, image, rotation: 0, zoom: 1, panX: 0, panY: 0, aspect: "4:3" };
+    editorZoom.value = "1";
+    setEditorAspect("4:3");
+    editorDialog.showModal();
+  } catch {
+    $("#speciesNoteStatus").textContent = "Cette image ne peut pas être ouverte dans l’éditeur de ce navigateur.";
+  }
+}
+
+function closeEditor() {
+  if (editorDialog.open) editorDialog.close();
+  state.editor = null;
+  state.editorPointer = null;
+}
+
+$("#cancelEditorButton").addEventListener("click", closeEditor);
+$("#rotateLeftButton").addEventListener("click", () => {
+  if (!state.editor) return;
+  state.editor.rotation = (state.editor.rotation - 90) % 360;
+  setEditorAspect(state.editor.aspect);
+});
+$("#rotateRightButton").addEventListener("click", () => {
+  if (!state.editor) return;
+  state.editor.rotation = (state.editor.rotation + 90) % 360;
+  setEditorAspect(state.editor.aspect);
+});
+editorZoom.addEventListener("input", () => {
+  if (!state.editor) return;
+  state.editor.zoom = Number(editorZoom.value);
+  drawEditor();
+});
+$$(".aspectButtons button").forEach((button) => button.addEventListener("click", () => setEditorAspect(button.dataset.aspect)));
+
+editorCanvas.addEventListener("pointerdown", (event) => {
+  if (!state.editor) return;
+  editorCanvas.setPointerCapture(event.pointerId);
+  state.editorPointer = { x: event.clientX, y: event.clientY, panX: state.editor.panX, panY: state.editor.panY };
+});
+editorCanvas.addEventListener("pointermove", (event) => {
+  if (!state.editor || !state.editorPointer) return;
+  const rect = editorCanvas.getBoundingClientRect();
+  const scaleX = editorCanvas.width / rect.width;
+  const scaleY = editorCanvas.height / rect.height;
+  state.editor.panX = state.editorPointer.panX + (event.clientX - state.editorPointer.x) * scaleX;
+  state.editor.panY = state.editorPointer.panY + (event.clientY - state.editorPointer.y) * scaleY;
+  drawEditor();
+});
+editorCanvas.addEventListener("pointerup", () => { state.editorPointer = null; });
+editorCanvas.addEventListener("pointercancel", () => { state.editorPointer = null; });
+
+function exportEditedBlob() {
+  return new Promise((resolve) => {
+    const aspect = editorCanvas.width / editorCanvas.height;
+    const outputWidth = 1600;
+    const outputHeight = Math.round(outputWidth / aspect);
+    const canvas = document.createElement("canvas");
+    canvas.width = outputWidth;
+    canvas.height = outputHeight;
+    drawEditor(canvas);
+    canvas.toBlob((blob) => resolve(blob), "image/jpeg", 0.92);
+  });
+}
+
+$("#saveEditorButton").addEventListener("click", async () => {
+  if (!state.editor) return;
+  const editorState = { ...state.editor };
+  const blob = await exportEditedBlob();
+  if (!blob) return;
+  const file = new File([blob], `fleuretmoi-${Date.now()}.jpg`, { type: "image/jpeg" });
+
+  if (editorState.mode === "draft") {
+    const old = state.photos[editorState.index];
+    if (old) {
+      URL.revokeObjectURL(old.preview);
+      old.file = file;
+      old.preview = URL.createObjectURL(file);
+    }
+    closeEditor();
+    renderPhotos();
+    return;
+  }
+
+  if (editorState.mode === "stored") {
+    const observation = await dbGet(STORE_OBSERVATIONS, editorState.observationId);
+    if (observation?.photos?.[editorState.photoIndex]) {
+      const storedPhoto = observation.photos[editorState.photoIndex];
+      storedPhoto.blob = blob;
+      storedPhoto.name = file.name;
+      storedPhoto.type = file.type;
+      await dbPut(STORE_OBSERVATIONS, observation);
+    }
+    closeEditor();
+    const species = await dbGet(STORE_SPECIES, editorState.speciesId);
+    if (species) await renderSpecies(species);
+    await renderHistory();
+    await renderMap();
+  }
+});
+
+// ----- Confetti without external dependency -----
+function launchConfetti() {
+  if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+  const canvas = $("#confettiCanvas");
+  const ctx = canvas.getContext("2d");
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = innerWidth * dpr;
+  canvas.height = innerHeight * dpr;
+  canvas.style.width = `${innerWidth}px`;
+  canvas.style.height = `${innerHeight}px`;
+  ctx.scale(dpr, dpr);
+  const colors = ["#244d36", "#6f9878", "#d6a955", "#b86750", "#e8dfb5"];
+  const pieces = Array.from({ length: 90 }, () => ({
+    x: innerWidth * (.35 + Math.random() * .3),
+    y: innerHeight * .28,
+    vx: (Math.random() - .5) * 10,
+    vy: -4 - Math.random() * 7,
+    g: .18 + Math.random() * .12,
+    size: 5 + Math.random() * 7,
+    rotation: Math.random() * Math.PI,
+    vr: (Math.random() - .5) * .25,
+    color: colors[Math.floor(Math.random() * colors.length)],
+  }));
+  const start = performance.now();
+  function frame(now) {
+    ctx.clearRect(0, 0, innerWidth, innerHeight);
+    pieces.forEach((p) => {
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vy += p.g;
+      p.rotation += p.vr;
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rotation);
+      ctx.fillStyle = p.color;
+      ctx.fillRect(-p.size / 2, -p.size / 3, p.size, p.size * .65);
+      ctx.restore();
+    });
+    if (now - start < 1650) requestAnimationFrame(frame);
+    else ctx.clearRect(0, 0, innerWidth, innerHeight);
+  }
+  requestAnimationFrame(frame);
+}
+
+// ----- Mobile edge gestures -----
+function isEditorOpen() {
+  return editorDialog.open;
+}
+
+document.addEventListener("touchstart", (event) => {
+  if (isEditorOpen() || event.touches.length !== 1) return;
+  const touch = event.touches[0];
+  state.touchStart = {
+    x: touch.clientX,
+    y: touch.clientY,
+    left: touch.clientX <= 28,
+    right: touch.clientX >= window.innerWidth - 28,
+    bottom: touch.clientY >= window.innerHeight - 48,
+  };
+}, { passive: true });
+
+document.addEventListener("touchend", (event) => {
+  if (!state.touchStart || isEditorOpen() || !event.changedTouches.length) return;
+  const touch = event.changedTouches[0];
+  const dx = touch.clientX - state.touchStart.x;
+  const dy = touch.clientY - state.touchStart.y;
+  const start = state.touchStart;
+  state.touchStart = null;
+
+  if (start.left && dx > 72 && Math.abs(dy) < 85) {
+    showMainView("map");
+    return;
+  }
+  if (start.right && dx < -72 && Math.abs(dy) < 85) {
+    showMainView("herbarium");
+    return;
+  }
+  if (start.bottom && dy < -82 && Math.abs(dx) < 95) showMainView("camera");
+}, { passive: true });
+
 $("#clearHistoryButton").addEventListener("click", async () => {
-  if (!confirm("Effacer tout l’historique enregistré sur cet appareil ?")) return;
+  if (!confirm("Effacer toutes les observations et toutes les espèces de l’herbier enregistrées sur cet appareil ?")) return;
+  await dbClear(STORE_OBSERVATIONS);
+  await dbClear(STORE_SPECIES);
   await dbClear(STORE_HISTORY);
-  await renderHistory();
+  await refreshAllLists();
 });
 
 window.addEventListener("online", async () => {
@@ -587,12 +1481,28 @@ window.addEventListener("online", async () => {
 });
 window.addEventListener("offline", setConnectionUi);
 
+async function refreshAllLists() {
+  await renderQueue();
+  await renderHistory();
+  await renderHerbarium();
+  if (state.map) await renderMap();
+}
+
+async function init() {
+  setConnectionUi();
+  renderApiKeyState();
+  await openDb();
+  await syncVerifiedSpecies();
+  await refreshAllLists();
+  if (navigator.onLine) await processQueue();
+  await showMainView("camera");
+}
+
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js"));
 }
 
-setConnectionUi();
-renderApiKeyState();
-renderHistory();
-renderQueue();
-if (navigator.onLine) processQueue();
+init().catch((error) => {
+  console.error(error);
+  statusText.textContent = `Impossible d’initialiser l’application : ${error.message}`;
+});
