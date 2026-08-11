@@ -437,3 +437,64 @@ html.edgeSwiping body {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* Identification correction, data safety and observation management */
+.identificationActions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 12px; }
+.altActions { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
+.candidateSelectButton, .queueRetryButton {
+  border: 1px solid var(--green);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--green);
+  padding: 7px 10px;
+  font-weight: 700;
+  font-size: .76rem;
+}
+.queueStatusWrap { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; text-align: right; }
+.queueError { color: var(--danger); font-size: .78rem; max-width: 34ch; }
+.captureDateEditor { margin-top: 14px; padding-top: 13px; border-top: 1px solid #eef2ee; }
+.captureDateEditor .fieldLabel { margin-top: 0; }
+.captureDateEditorRow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 9px; align-items: center; }
+.captureDateEditorRow input {
+  width: 100%; min-height: 42px; border: 1px solid var(--line); border-radius: 12px;
+  padding: 0 11px; background: #fff; color: var(--ink);
+}
+.dangerZone { border-color: rgba(138, 51, 45, .22); }
+.dangerButton {
+  min-height: 42px; border: 1px solid var(--danger); border-radius: 12px;
+  padding: 0 15px; background: #fff; color: var(--danger); font-weight: 700;
+}
+.dataActions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 16px; }
+.importBackupButton { display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+.importBackupButton input { position: absolute; opacity: 0; pointer-events: none; width: 1px; height: 1px; }
+.manualIdentificationDialog {
+  width: min(560px, calc(100vw - 24px)); max-height: min(86vh, 720px); padding: 0;
+  border: 1px solid var(--line); border-radius: 22px; background: var(--card); color: var(--ink);
+  box-shadow: 0 24px 80px rgba(23,48,37,.24);
+}
+.manualIdentificationDialog::backdrop { background: rgba(16, 28, 21, .42); backdrop-filter: blur(3px); }
+.manualIdentificationPanel { padding: 20px; }
+.manualTaxonomyGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.manualTaxonomyGrid .fieldLabel { margin-top: 14px; }
+
+@media (max-width: 700px) {
+  .shell { padding-bottom: max(102px, calc(82px + env(safe-area-inset-bottom))); }
+  .mainNavigation {
+    display: flex;
+    position: fixed;
+    top: auto;
+    bottom: max(10px, env(safe-area-inset-bottom));
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 1700;
+    margin: 0;
+    box-shadow: 0 8px 30px rgba(23,48,37,.18);
+  }
+  .mainNavigation button { padding: 9px 13px; }
+  .altRow { align-items: flex-start; }
+  .altActions { align-items: flex-end; flex-direction: column; }
+  .captureDateEditorRow { grid-template-columns: 1fr; }
+  .dataActions { display: grid; grid-template-columns: 1fr; }
+  .dataActions > * { width: 100%; }
+  .manualTaxonomyGrid { grid-template-columns: 1fr; gap: 0; }
+}
