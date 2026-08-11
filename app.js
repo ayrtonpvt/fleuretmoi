@@ -29,6 +29,8 @@ const state = {
   locationPickerMarker: null,
   pendingLocation: null,
   lastGeocodeAt: 0,
+  navDepth: 0,
+  handlingPopState: false,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -652,12 +654,32 @@ function hideAllViews() {
   Object.values(views).forEach((view) => view.classList.add("hidden"));
 }
 
-async function showMainView(name) {
+function makeHistoryState(route, depth = state.navDepth) {
+  return { fleuretmoi: true, route, depth };
+}
+
+function recordRoute(route, mode = "push") {
+  if (mode === "none" || state.handlingPopState) return;
+  if (mode === "replace") {
+    history.replaceState(makeHistoryState(route, state.navDepth), "", location.href);
+    return;
+  }
+  const currentRoute = history.state?.fleuretmoi ? history.state.route : null;
+  if (currentRoute && JSON.stringify(currentRoute) === JSON.stringify(route)) return;
+  state.navDepth = Math.max(0, Number(history.state?.depth ?? state.navDepth ?? 0)) + 1;
+  history.pushState(makeHistoryState(route, state.navDepth), "", location.href);
+}
+
+async function showMainView(name, { historyMode = "push" } = {}) {
   if (!["camera", "herbarium", "map"].includes(name)) name = "camera";
   hideAllViews();
   views[name].classList.remove("hidden");
   mainNavigation.classList.remove("hidden");
   state.currentMainView = name;
+  state.currentObservationId = null;
+  state.currentSpeciesId = null;
+  clearObjectUrls("detailObjectUrls");
+  clearObjectUrls("speciesObjectUrls");
   $$("#mainNavigation [data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === name));
   window.scrollTo({ top: 0, behavior: "instant" });
   if (name === "herbarium") await renderHerbarium();
@@ -665,11 +687,12 @@ async function showMainView(name) {
     await renderMap();
     setTimeout(() => state.map?.invalidateSize(), 50);
   }
+  recordRoute({ type: "main", value: name }, historyMode);
 }
 
 $$("#mainNavigation [data-view]").forEach((button) => button.addEventListener("click", () => showMainView(button.dataset.view)));
 
-async function openCapture(id, returnTarget = { type: "main", value: state.currentMainView }) {
+async function openCapture(id, returnTarget = { type: "main", value: state.currentMainView }, { historyMode = "push" } = {}) {
   const item = await dbGet(STORE_OBSERVATIONS, id);
   if (!item) return;
   state.currentObservationId = id;
@@ -679,14 +702,19 @@ async function openCapture(id, returnTarget = { type: "main", value: state.curre
   views.capture.classList.remove("hidden");
   mainNavigation.classList.add("hidden");
   window.scrollTo({ top: 0, behavior: "instant" });
+  recordRoute({ type: "capture", id, returnTarget }, historyMode);
 }
 
 async function closeCapture() {
+  if (history.state?.fleuretmoi && Number(history.state.depth || 0) > 0) {
+    history.back();
+    return;
+  }
   state.currentObservationId = null;
   clearObjectUrls("detailObjectUrls");
   const target = state.captureReturn;
-  if (target?.type === "species" && target.value) await openSpecies(target.value);
-  else await showMainView(target?.value || "camera");
+  if (target?.type === "species" && target.value) await openSpecies(target.value, { historyMode: "replace" });
+  else await showMainView(target?.value || "camera", { historyMode: "replace" });
 }
 
 $("#backCaptureButton").addEventListener("click", closeCapture);
@@ -1196,7 +1224,7 @@ async function renderHerbarium() {
 $("#herbariumSearch").addEventListener("input", renderHerbarium);
 $("#herbariumSort").addEventListener("change", renderHerbarium);
 
-async function openSpecies(id) {
+async function openSpecies(id, { historyMode = "push" } = {}) {
   const species = await dbGet(STORE_SPECIES, id);
   if (!species) return;
   state.currentSpeciesId = id;
@@ -1205,12 +1233,17 @@ async function openSpecies(id) {
   views.species.classList.remove("hidden");
   mainNavigation.classList.add("hidden");
   window.scrollTo({ top: 0, behavior: "instant" });
+  recordRoute({ type: "species", id }, historyMode);
 }
 
 $("#backSpeciesButton").addEventListener("click", async () => {
+  if (history.state?.fleuretmoi && Number(history.state.depth || 0) > 0) {
+    history.back();
+    return;
+  }
   state.currentSpeciesId = null;
   clearObjectUrls("speciesObjectUrls");
-  await showMainView("herbarium");
+  await showMainView("herbarium", { historyMode: "replace" });
 });
 
 async function renderSpecies(species) {
@@ -1414,9 +1447,21 @@ function drawEditor(targetCanvas = editorCanvas, outputScale = 1) {
   const { image, rotation, zoom, panX, panY } = state.editor;
   const logicalW = editorCanvas.width;
   const logicalH = editorCanvas.height;
+
+  // IMPORTANT: use one single scale factor for both axes. The crop frame may
+  // discard part of the image, but the source image is never stretched or
+  // squeezed to fit the requested aspect ratio.
   const factorX = canvas.width / logicalW;
   const factorY = canvas.height / logicalH;
+  const outputFactor = Math.min(factorX, factorY);
+  const renderedLogicalW = logicalW * outputFactor;
+  const renderedLogicalH = logicalH * outputFactor;
+  const offsetX = (canvas.width - renderedLogicalW) / 2;
+  const offsetY = (canvas.height - renderedLogicalH) / 2;
+
   const rot = rotatedDimensions(image, rotation);
+  // "cover" behaviour: scale uniformly until the whole crop frame is filled.
+  // Overflow is intentionally cropped instead of deforming the photograph.
   const baseScale = Math.max(logicalW / rot.width, logicalH / rot.height);
   const finalScale = baseScale * zoom;
 
@@ -1424,9 +1469,12 @@ function drawEditor(targetCanvas = editorCanvas, outputScale = 1) {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = "#16211a";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.translate((logicalW / 2 + panX) * factorX, (logicalH / 2 + panY) * factorY);
+  ctx.translate(
+    offsetX + (logicalW / 2 + panX) * outputFactor,
+    offsetY + (logicalH / 2 + panY) * outputFactor
+  );
   ctx.rotate(rotation * Math.PI / 180);
-  ctx.scale(finalScale * factorX, finalScale * factorY);
+  ctx.scale(finalScale * outputFactor, finalScale * outputFactor);
   ctx.drawImage(image, -image.naturalWidth / 2, -image.naturalHeight / 2);
   ctx.restore();
 
@@ -1753,6 +1801,7 @@ function animateSwipeTo(gesture, completed) {
         await renderHerbarium();
       }
 
+      recordRoute({ type: "main", value: targetName }, "push");
       cleanupSwipeGesture({ keepTarget: true });
     } else {
       cleanupSwipeGesture();
@@ -1846,6 +1895,37 @@ $("#clearHistoryButton").addEventListener("click", async () => {
   await refreshAllLists();
 });
 
+async function renderHistoryRoute(route) {
+  if (!route || typeof route !== "object") {
+    await showMainView("camera", { historyMode: "none" });
+    return;
+  }
+
+  if (route.type === "capture" && route.id != null) {
+    await openCapture(route.id, route.returnTarget || { type: "main", value: "camera" }, { historyMode: "none" });
+    return;
+  }
+  if (route.type === "species" && route.id != null) {
+    await openSpecies(route.id, { historyMode: "none" });
+    return;
+  }
+  await showMainView(route.value || "camera", { historyMode: "none" });
+}
+
+window.addEventListener("popstate", async (event) => {
+  if (!event.state?.fleuretmoi) return;
+  state.handlingPopState = true;
+  state.navDepth = Math.max(0, Number(event.state.depth || 0));
+  try {
+    await renderHistoryRoute(event.state.route);
+  } catch (error) {
+    console.error("Navigation retour impossible", error);
+    await showMainView("camera", { historyMode: "none" });
+  } finally {
+    state.handlingPopState = false;
+  }
+});
+
 window.addEventListener("online", async () => {
   setConnectionUi();
   statusText.textContent = "Connexion rétablie. Vérification des observations en attente…";
@@ -1868,7 +1948,8 @@ async function init() {
   await syncVerifiedSpecies();
   await refreshAllLists();
   if (navigator.onLine) await processQueue();
-  await showMainView("camera");
+  state.navDepth = 0;
+  await showMainView("camera", { historyMode: "replace" });
 }
 
 if ("serviceWorker" in navigator) {
