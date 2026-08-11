@@ -1,4 +1,4 @@
-const CACHE = "fleuretmoi-pages-v11";
+const CACHE = "fleuretmoi-pages-v12";
 const BASE = new URL("./", self.location.href);
 const APP_SHELL = [
   "",
