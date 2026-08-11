@@ -1,4 +1,4 @@
-const CACHE = "fleuretmoi-pages-v10";
+const CACHE = "fleuretmoi-pages-v11";
 const BASE = new URL("./", self.location.href);
 const APP_SHELL = [
   "",
@@ -11,7 +11,7 @@ const APP_SHELL = [
 ].map((path) => new URL(path, BASE).href);
 
 const OPTIONAL_LIBRARIES = [
-  "https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/lite.umd.js",
+  "https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/full.umd.js",
   "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css",
   "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
 ];
