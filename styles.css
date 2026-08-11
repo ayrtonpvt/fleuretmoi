@@ -145,7 +145,7 @@ h2 {
 .photoGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
 .photoCard { overflow: hidden; border: 1px solid var(--line); border-radius: 16px; background: #fafcf9; }
 .photoPreviewButton { display: block; width: 100%; padding: 0; border: 0; background: #e7ece8; }
-.photoCard img { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; background: #e7ece8; }
+.photoCard img { display: block; width: 100%; height: auto; max-height: 420px; object-fit: contain; background: #e7ece8; }
 .photoMetaLine { padding: 8px 10px 0; color: var(--muted); font-size: .72rem; min-height: 24px; }
 .photoControls { display: grid; grid-template-columns: 1fr auto auto; gap: 7px; padding: 9px; }
 .photoControls select { min-width: 0; border: 1px solid var(--line); border-radius: 10px; padding: 8px; background: white; }
@@ -248,10 +248,12 @@ h2 {
   padding-bottom: 2px;
 }
 .capturePhotoGrid img {
-  width: min(82vw, 420px);
+  width: auto;
+  height: auto;
+  max-width: min(82vw, 420px);
+  max-height: 62vh;
   flex: 0 0 auto;
-  aspect-ratio: 4 / 3;
-  object-fit: cover;
+  object-fit: contain;
   border-radius: 16px;
   background: #e7ece8;
   scroll-snap-align: start;
@@ -280,16 +282,20 @@ h2 {
 .sortField { display: grid; gap: 5px; color: var(--muted); font-size: .74rem; font-weight: 700; }
 .herbariumList { display: grid; gap: 12px; }
 .herbariumEmpty { padding: 34px 22px; text-align: center; color: var(--muted); }
-.speciesCardButton { width: 100%; border: 0; background: transparent; color: inherit; text-align: left; padding: 0; }
-.speciesCard { display: grid; grid-template-columns: 128px minmax(0,1fr); gap: 16px; align-items: center; }
-.speciesThumbs { position: relative; height: 94px; }
-.speciesThumb { position: absolute; width: 76px; height: 88px; border-radius: 14px; object-fit: cover; border: 3px solid white; box-shadow: 0 3px 13px rgba(23,48,37,.12); background: var(--soft); }
-.speciesThumb:nth-child(1) { left: 0; top: 2px; z-index: 3; }
-.speciesThumb:nth-child(2) { left: 24px; top: 5px; z-index: 2; }
-.speciesThumb:nth-child(3) { left: 48px; top: 8px; z-index: 1; }
-.speciesThumbPlaceholder { width: 88px; height: 88px; border-radius: 14px; border: 1px dashed var(--green-3); display: grid; place-items: center; color: var(--green-3); font-family: var(--font-ifao); }
-.speciesCard h2 { margin-bottom: 3px; }
-.speciesCardMeta { color: var(--muted); font-size: .78rem; margin-top: 7px; }
+.speciesEntry { padding: 12px; overflow: hidden; }
+.speciesCardButton { width: 100%; border: 0; background: transparent; color: inherit; text-align: left; padding: 0; display: block; }
+.speciesCard { display: grid; grid-template-columns: minmax(210px, 34%) minmax(0, 1fr); gap: 22px; align-items: stretch; min-height: 168px; }
+.speciesThumbs { position: relative; min-height: 168px; border-radius: 16px; overflow: hidden; background: var(--soft); }
+.speciesThumb { position: absolute; border-radius: 12px; object-fit: cover; background: var(--soft); }
+.speciesThumb:nth-child(1) { inset: 0; width: 100%; height: 100%; z-index: 1; border-radius: 16px; }
+.speciesThumb:nth-child(2), .speciesThumb:nth-child(3) { width: 58px; height: 58px; right: 9px; bottom: 9px; z-index: 3; border: 2px solid white; box-shadow: 0 3px 12px rgba(23,48,37,.18); }
+.speciesThumb:nth-child(2) { right: 45px; }
+.speciesThumb:nth-child(3) { right: 9px; }
+.speciesThumbPlaceholder { width: 100%; height: 100%; min-height: 168px; border-radius: 16px; border: 1px dashed var(--green-3); display: grid; place-items: center; color: var(--green-3); font-family: var(--font-ifao); }
+.speciesCard > div:last-child { align-self: center; min-width: 0; padding: 10px 4px 10px 0; }
+.speciesCard h2 { margin: 0 0 8px; font-size: clamp(1.25rem, 2.4vw, 1.65rem); line-height: 1.15; white-space: normal; overflow-wrap: anywhere; }
+.speciesCard .scientific { margin: 0; font-size: 1.02rem; line-height: 1.35; white-space: normal; overflow-wrap: anywhere; }
+.speciesCardMeta { color: var(--muted); font-size: .8rem; line-height: 1.45; margin-top: 12px; white-space: normal; }
 .speciesIdentityCard { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 22px; align-items: center; }
 .speciesIllustrationPlaceholder { min-height: 210px; border: 1px dashed #a7b9aa; border-radius: 18px; background: linear-gradient(145deg,#f7f3ea,#edf3eb); display: grid; align-content: center; justify-items: center; padding: 18px; text-align: center; font-family: var(--font-ifao); color: #66786b; }
 .speciesIllustrationPlaceholder small { font-family: var(--font-ui); color: var(--muted); margin-top: 5px; }
@@ -301,10 +307,50 @@ h2 {
 .observationDate { font-size: .8rem; color: var(--muted); }
 .observationPhotos { display: flex; gap: 9px; overflow-x: auto; padding-bottom: 3px; }
 .observationPhotoCard { position: relative; flex: 0 0 auto; }
-.observationPhotoCard img { width: 132px; height: 100px; border-radius: 13px; object-fit: cover; background: var(--soft); display: block; }
+.observationPhotoCard img { width: auto; height: 118px; max-width: min(72vw, 260px); border-radius: 13px; object-fit: contain; background: var(--soft); display: block; }
 .photoCropMini { position: absolute; right: 6px; bottom: 6px; border: 0; border-radius: 999px; background: rgba(255,255,255,.92); color: var(--green); font-size: .68rem; font-weight: 800; padding: 6px 8px; box-shadow: 0 2px 8px rgba(0,0,0,.12); }
 .openObservationButton { border: 0; background: transparent; color: var(--green); font-weight: 700; font-size: .78rem; }
 .observationNote { margin: 10px 0 0; padding: 10px 12px; border-radius: 11px; background: var(--soft-2); color: var(--muted); font-size: .82rem; line-height: 1.45; white-space: pre-wrap; }
+
+/* Interactive mobile edge navigation: destination follows the finger. */
+.appView { will-change: transform; }
+html.edgeSwiping,
+html.edgeSwiping body {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+.swipeSource {
+  position: relative;
+  z-index: 1;
+  will-change: transform;
+}
+.swipePreview {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 1800;
+  width: 100vw !important;
+  height: 100dvh !important;
+  margin: 0 !important;
+  padding: max(16px, env(safe-area-inset-top)) 10px max(28px, env(safe-area-inset-bottom)) !important;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at top right, rgba(124, 166, 133, .17), transparent 30rem),
+    var(--paper);
+  box-shadow: 0 0 36px rgba(23, 48, 37, .18);
+  will-change: transform;
+  contain: layout paint;
+}
+.swipePreview > * {
+  width: min(780px, 100%);
+  margin-left: auto;
+  margin-right: auto;
+}
+.swipePreviewLeft { transform: translate3d(-100vw, 0, 0); }
+.swipePreviewRight { transform: translate3d(100vw, 0, 0); }
+.swipePreviewBottom { transform: translate3d(0, 100vh, 0); }
+.swipeAnimating {
+  transition: transform 240ms cubic-bezier(.22, .78, .22, 1) !important;
+}
 
 .mapCard { padding: 10px; }
 .plantMap { height: min(68vh, 620px); min-height: 430px; border-radius: 16px; overflow: hidden; background: #e8ece7; }
@@ -333,6 +379,22 @@ h2 {
 
 .confettiCanvas { position: fixed; inset: 0; z-index: 5000; pointer-events: none; width: 100%; height: 100%; }
 
+
+.locationPicker { width: min(94vw, 680px); max-height: 94vh; border: 0; border-radius: 22px; padding: 0; box-shadow: 0 24px 80px rgba(11,31,20,.24); color: var(--ink); background: #fff; }
+.locationPicker::backdrop { background: rgba(14,29,20,.58); backdrop-filter: blur(3px); }
+.locationPickerPanel { padding: 20px; }
+.locationModeButtons { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
+.locationModeButtons .secondaryButton.active { background: var(--green); border-color: var(--green); color: #fff; }
+.locationModePanel { margin-top: 14px; }
+.locationPickerMap { height: min(46vh, 390px); min-height: 300px; border-radius: 16px; overflow: hidden; background: #e8ece7; }
+.locationAddressRow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.locationAddressRow input { width: 100%; min-width: 0; border: 1px solid var(--line); border-radius: 12px; padding: 11px 12px; font: inherit; color: var(--ink); background: #fff; }
+.locationSearchResults { display: grid; gap: 7px; margin-top: 10px; }
+.locationSearchResult { width: 100%; text-align: left; border: 1px solid var(--line); border-radius: 12px; background: #fff; padding: 10px 12px; color: var(--ink); font: inherit; line-height: 1.35; }
+.locationSearchResult:hover, .locationSearchResult:focus-visible { border-color: var(--green); background: var(--soft); outline: none; }
+.locationSelectionSummary { margin: 14px 0 5px; padding: 10px 12px; border-radius: 12px; background: var(--soft-2); }
+.locationAttribution { margin: 9px 0 0; font-size: .72rem; text-align: center; }
+
 @media (max-width: 700px) {
   .shell { width: min(100% - 20px, 800px); padding-top: max(16px, env(safe-area-inset-top)); }
   .mainNavigation { display: none; }
@@ -349,15 +411,26 @@ h2 {
   .keyRow { display: grid; grid-template-columns: 1fr; }
   .resultHead { align-items: center; }
   .herbariumTools { grid-template-columns: 1fr; }
-  .speciesCard { grid-template-columns: 106px minmax(0,1fr); gap: 12px; }
-  .speciesThumbs { height: 82px; }
-  .speciesThumb { width: 66px; height: 76px; }
-  .speciesThumb:nth-child(2) { left: 20px; }
-  .speciesThumb:nth-child(3) { left: 40px; }
+  .speciesEntry { padding: 10px; }
+  .speciesCard { grid-template-columns: 1fr; gap: 0; min-height: 0; }
+  .speciesThumbs { width: 100%; min-height: 0; aspect-ratio: 16 / 10; border-radius: 15px; }
+  .speciesThumb:nth-child(1) { border-radius: 15px; }
+  .speciesThumb:nth-child(2), .speciesThumb:nth-child(3) { width: 62px; height: 62px; bottom: 10px; }
+  .speciesThumb:nth-child(2) { right: 50px; }
+  .speciesThumb:nth-child(3) { right: 10px; }
+  .speciesThumbPlaceholder { min-height: 0; aspect-ratio: 16 / 10; border-radius: 15px; }
+  .speciesCard > div:last-child { padding: 15px 7px 7px; }
+  .speciesCard h2 { font-size: 1.45rem; line-height: 1.12; margin-bottom: 7px; }
+  .speciesCard .scientific { font-size: 1.08rem; line-height: 1.35; }
+  .speciesCardMeta { margin-top: 10px; font-size: .81rem; }
   .speciesIdentityCard { grid-template-columns: 1fr; }
   .speciesIllustrationPlaceholder { min-height: 170px; }
   .plantMap { min-height: 68vh; }
   .photoEditor { width: calc(100vw - 12px); border-radius: 18px; }
+  .locationPicker { width: calc(100vw - 12px); border-radius: 18px; }
+  .locationModeButtons { grid-template-columns: 1fr; }
+  .locationAddressRow { grid-template-columns: 1fr; }
+  .locationPickerMap { min-height: 42vh; }
   .editorPanel { padding: 15px; }
 }
 
