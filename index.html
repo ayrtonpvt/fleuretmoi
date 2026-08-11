@@ -134,14 +134,18 @@
           <span class="srOnly">Rechercher dans l’herbier</span>
           <input id="herbariumSearch" type="search" placeholder="Rechercher une espèce…" autocomplete="off" />
         </label>
-        <label class="sortField">
-          <span>Tri</span>
-          <select id="herbariumSort">
-            <option value="alpha">Ordre alphabétique</option>
-            <option value="recent">Dernière capture</option>
-            <option value="first">Première capture</option>
-          </select>
-        </label>
+        <div class="sortControl">
+          <button id="herbariumSortButton" class="sortButton" type="button" aria-haspopup="menu" aria-expanded="false">
+            <svg class="sortButtonIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h11M8 12h8M8 18h5M4 5v14M2 17l2 2 2-2"/></svg>
+            <span id="herbariumSortLabel">Ordre alphabétique</span>
+            <svg class="sortChevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>
+          </button>
+          <div id="herbariumSortMenu" class="sortMenu" role="menu" hidden>
+            <button type="button" role="menuitemradio" aria-checked="true" data-sort="alpha">Ordre alphabétique</button>
+            <button type="button" role="menuitemradio" aria-checked="false" data-sort="recent">Dernière capture</button>
+            <button type="button" role="menuitemradio" aria-checked="false" data-sort="first">Première capture</button>
+          </div>
+        </div>
       </section>
       <section id="herbariumList" class="herbariumList"></section>
     </section>
@@ -236,16 +240,12 @@
         <p class="eyebrow">FICHE D’ESPÈCE</p>
       </header>
 
-      <section class="card speciesIdentityCard">
+      <section id="speciesIdentityCard" class="card speciesIdentityCard">
         <div class="speciesIllustrationPanel">
           <button id="speciesIllustrationButton" class="speciesIllustrationButton" type="button" aria-label="Choisir une illustration botanique">
             <span id="speciesIllustrationMedia" class="speciesIllustrationMedia"></span>
           </button>
-          <div id="speciesIllustrationActions" class="speciesIllustrationActions" hidden>
-            <button id="adjustSpeciesIllustrationButton" class="textButton neutral" type="button">Recadrer</button>
-            <button id="changeSpeciesIllustrationButton" class="textButton neutral" type="button">Changer</button>
-            <button id="removeSpeciesIllustrationButton" class="textButton dangerText" type="button">Retirer</button>
-          </div>
+          <div id="speciesIllustrationActions" class="speciesIllustrationActions" hidden></div>
           <a id="speciesIllustrationSource" class="speciesIllustrationSource" target="_blank" rel="noopener noreferrer" hidden></a>
         </div>
         <div>
@@ -386,8 +386,11 @@
       <div class="illustrationEditorCanvasWrap"><canvas id="illustrationEditorCanvas" width="800" height="1000"></canvas></div>
       <label class="rangeField">Taille / zoom <input id="illustrationEditorZoom" type="range" min="1" max="3" step="0.01" value="1"></label>
       <div class="illustrationEditorActions">
+        <button id="illustrationEditorChange" class="secondaryButton illustrationChangeButton" type="button">Changer d’illustration</button>
         <button id="illustrationEditorReset" class="secondaryButton" type="button">Réinitialiser</button>
-        <button id="illustrationEditorSave" class="primaryButton" type="button">Utiliser cette illustration</button>
+        <button id="illustrationEditorSave" class="illustrationConfirmButton" type="button" aria-label="Valider l’ajustement" title="Valider">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.2 4.2L19 7"/></svg>
+        </button>
       </div>
       <p class="muted">Faites glisser l’image pour la repositionner dans la fiche.</p>
       <p id="illustrationEditorStatus" class="statusText" aria-live="polite"></p>

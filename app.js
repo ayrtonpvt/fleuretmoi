@@ -32,6 +32,7 @@ const state = {
   navDepth: 0,
   handlingPopState: false,
   historyVisibleCount: 60,
+  herbariumSort: "alpha",
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -1589,7 +1590,7 @@ async function renderHerbarium() {
   const observationsBySpecies = groupObservationsBySpecies(allObservations);
   let speciesRows = [...allSpecies];
   const query = $("#herbariumSearch").value.trim().toLocaleLowerCase("fr");
-  const sort = $("#herbariumSort").value;
+  const sort = state.herbariumSort;
 
   if (query) {
     speciesRows = speciesRows.filter((species) => [species.commonName, species.scientificName, species.family, species.genus]
@@ -1663,7 +1664,43 @@ async function renderHerbarium() {
 }
 
 $("#herbariumSearch").addEventListener("input", renderHerbarium);
-$("#herbariumSort").addEventListener("change", renderHerbarium);
+
+const herbariumSortButton = $("#herbariumSortButton");
+const herbariumSortMenu = $("#herbariumSortMenu");
+const herbariumSortLabel = $("#herbariumSortLabel");
+const herbariumSortLabels = {
+  alpha: "Ordre alphabétique",
+  recent: "Dernière capture",
+  first: "Première capture",
+};
+
+function closeHerbariumSortMenu() {
+  if (!herbariumSortMenu || !herbariumSortButton) return;
+  herbariumSortMenu.hidden = true;
+  herbariumSortButton.setAttribute("aria-expanded", "false");
+}
+
+herbariumSortButton?.addEventListener("click", (event) => {
+  event.stopPropagation();
+  const willOpen = herbariumSortMenu.hidden;
+  herbariumSortMenu.hidden = !willOpen;
+  herbariumSortButton.setAttribute("aria-expanded", String(willOpen));
+});
+
+$$('#herbariumSortMenu [data-sort]').forEach((button) => button.addEventListener("click", async () => {
+  state.herbariumSort = button.dataset.sort || "alpha";
+  herbariumSortLabel.textContent = herbariumSortLabels[state.herbariumSort] || herbariumSortLabels.alpha;
+  $$('#herbariumSortMenu [data-sort]').forEach((item) => item.setAttribute("aria-checked", String(item === button)));
+  closeHerbariumSortMenu();
+  await renderHerbarium();
+}));
+
+document.addEventListener("click", (event) => {
+  if (!event.target.closest?.(".sortControl")) closeHerbariumSortMenu();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeHerbariumSortMenu();
+});
 
 async function openSpecies(id, { historyMode = "push" } = {}) {
   const species = await dbGet(STORE_SPECIES, id);
@@ -2524,6 +2561,18 @@ async function refreshAllLists() {
   await renderHerbarium();
   if (state.map) await renderMap();
 }
+
+function closeDialogFromBackdrop(dialog, closeHandler = null) {
+  dialog?.addEventListener("pointerdown", (event) => {
+    if (event.target !== dialog) return;
+    if (typeof closeHandler === "function") closeHandler();
+    else dialog.close();
+  });
+}
+
+closeDialogFromBackdrop($("#locationPicker"));
+closeDialogFromBackdrop($("#manualIdentificationDialog"));
+closeDialogFromBackdrop($("#photoEditor"), closeEditor);
 
 async function init() {
   setConnectionUi();

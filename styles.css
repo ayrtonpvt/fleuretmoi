@@ -277,9 +277,32 @@ h2 {
 .historyStatus.verified { background: var(--green); color: white; }
 .historyStatus .checkIcon { width: 20px; height: 20px; }
 
-.herbariumTools { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: end; }
-.searchField input, .sortField select { width: 100%; border: 1px solid var(--line); border-radius: 13px; background: #fff; color: var(--ink); min-height: 44px; padding: 0 13px; }
-.sortField { display: grid; gap: 5px; color: var(--muted); font-size: .74rem; font-weight: 700; }
+.herbariumTools { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; }
+.searchField input { width: 100%; border: 1px solid var(--line); border-radius: 13px; background: #fff; color: var(--ink); min-height: 46px; padding: 0 13px; }
+.sortControl { position: relative; }
+.sortButton {
+  min-height: 46px; display: inline-flex; align-items: center; gap: 9px; padding: 0 12px;
+  border: 1px solid var(--line); border-radius: 13px; background: #fff; color: var(--green);
+  box-shadow: 0 4px 14px rgba(32,61,43,.055); font-size: .78rem; font-weight: 800; white-space: nowrap;
+  transition: border-color .15s ease, box-shadow .15s ease, transform .12s ease, background .15s ease;
+}
+.sortButton:hover { border-color: #a9bcae; background: #fbfdfb; box-shadow: 0 6px 18px rgba(32,61,43,.08); }
+.sortButton:active { transform: translateY(1px); }
+.sortButton[aria-expanded="true"] { border-color: var(--green-3); box-shadow: 0 0 0 3px rgba(56,107,76,.10); }
+.sortButtonIcon, .sortChevron { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; flex: 0 0 auto; }
+.sortChevron { width: 15px; height: 15px; color: var(--muted); transition: transform .15s ease; }
+.sortButton[aria-expanded="true"] .sortChevron { transform: rotate(180deg); }
+.sortMenu {
+  position: absolute; z-index: 900; top: calc(100% + 7px); right: 0; min-width: 210px; padding: 6px;
+  border: 1px solid var(--line); border-radius: 14px; background: rgba(255,255,255,.98); box-shadow: 0 16px 44px rgba(23,48,37,.16);
+  backdrop-filter: blur(10px);
+}
+.sortMenu button {
+  width: 100%; border: 0; border-radius: 10px; background: transparent; color: var(--ink); padding: 10px 11px; text-align: left;
+  font-size: .8rem; font-weight: 700;
+}
+.sortMenu button:hover { background: var(--soft-2); }
+.sortMenu button[aria-checked="true"] { background: var(--soft); color: var(--green); }
 .herbariumList { display: grid; gap: 12px; }
 .herbariumEmpty { padding: 34px 22px; text-align: center; color: var(--muted); }
 .speciesEntry { padding: 12px; overflow: hidden; }
@@ -297,6 +320,14 @@ h2 {
 .speciesCard .scientific { margin: 0; font-size: 1.02rem; line-height: 1.35; white-space: normal; overflow-wrap: anywhere; }
 .speciesCardMeta { color: var(--muted); font-size: .8rem; line-height: 1.45; margin-top: 12px; white-space: normal; }
 .speciesIdentityCard { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 22px; align-items: center; }
+.speciesIdentityCard.illustrationThemed {
+  background: var(--species-theme-bg); color: var(--species-theme-ink); border-color: var(--species-theme-border);
+  transition: background-color .28s ease, color .28s ease, border-color .28s ease;
+}
+.speciesIdentityCard.illustrationThemed .eyebrow,
+.speciesIdentityCard.illustrationThemed .scientific { color: var(--species-theme-muted); }
+.speciesIdentityCard.illustrationThemed .scientificLink { color: var(--species-theme-ink); text-decoration-color: var(--species-theme-muted); }
+.speciesIdentityCard.illustrationThemed .metaChip { background: var(--species-theme-chip); color: var(--species-theme-ink); border: 1px solid var(--species-theme-border); }
 .speciesIllustrationPlaceholder { min-height: 210px; border: 1px dashed #a7b9aa; border-radius: 18px; background: linear-gradient(145deg,#f7f3ea,#edf3eb); display: grid; align-content: center; justify-items: center; padding: 18px; text-align: center; font-family: var(--font-ifao); color: #66786b; }
 .speciesIllustrationPlaceholder small { font-family: var(--font-ui); color: var(--muted); margin-top: 5px; }
 .speciesTitle { font-size: clamp(2rem, 7vw, 3.1rem); }
@@ -410,7 +441,10 @@ html.edgeSwiping body {
   .card { padding: 17px; border-radius: 18px; }
   .keyRow { display: grid; grid-template-columns: 1fr; }
   .resultHead { align-items: center; }
-  .herbariumTools { grid-template-columns: 1fr; }
+  .herbariumTools { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+  .sortButton { width: 46px; padding: 0; justify-content: center; }
+  .sortButton #herbariumSortLabel, .sortButton .sortChevron { display: none; }
+  .sortMenu { right: 0; }
   .speciesEntry { padding: 10px; }
   .speciesCard { grid-template-columns: 1fr; gap: 0; min-height: 0; }
   .speciesThumbs { width: 100%; min-height: 0; aspect-ratio: 16 / 10; border-radius: 15px; }
@@ -516,7 +550,7 @@ html.edgeSwiping body {
   display: grid; align-content: center; justify-items: center; padding: 18px; text-align: center;
   font-family: var(--font-ifao); color: #66786b;
 }
-.speciesIllustrationPlaceholderInner small { font-family: var(--font-ui); color: var(--muted); margin-top: 5px; }
+.speciesIllustrationPlaceholderInner small { font-family: var(--font-ui); color: var(--green); margin-top: 8px; font-size: .7rem; font-weight: 900; letter-spacing: .12em; }
 .speciesIllustrationActions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 9px; }
 .speciesIllustrationActions .textButton { padding: 0; }
 .dangerText { color: var(--danger) !important; }
@@ -558,8 +592,16 @@ html.edgeSwiping body {
 .illustrationEditorCanvasWrap { width: min(100%, 430px); margin: 16px auto; background: #e7ebe6; border-radius: 16px; overflow: hidden; box-shadow: inset 0 0 0 1px rgba(35, 68, 48, .1); }
 .illustrationEditorCanvasWrap canvas { width: 100%; height: auto; display: block; touch-action: none; cursor: grab; }
 .illustrationEditorCanvasWrap canvas:active { cursor: grabbing; }
-.illustrationEditorActions { display: flex; justify-content: space-between; gap: 10px; margin-top: 14px; }
-.illustrationEditorActions > button { flex: 1; }
+.illustrationEditorActions { display: flex; align-items: stretch; justify-content: space-between; gap: 10px; margin-top: 14px; }
+.illustrationEditorActions > button { flex: 1; margin-top: 0; }
+.illustrationConfirmButton {
+  flex: 0 0 52px !important; width: 52px; min-height: 48px; border: 0; border-radius: 14px; background: var(--green); color: #fff;
+  display: grid; place-items: center; box-shadow: 0 5px 16px rgba(36,77,54,.18);
+}
+.illustrationConfirmButton:hover { background: var(--green-2); }
+.illustrationConfirmButton:disabled { opacity: .55; cursor: wait; }
+.illustrationConfirmButton svg { width: 25px; height: 25px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.illustrationChangeButton { border-color: var(--green-3); }
 
 @media (max-width: 700px) {
   .speciesIllustrationMedia, .speciesIllustrationPlaceholderInner { min-height: 0; }
@@ -571,4 +613,8 @@ html.edgeSwiping body {
   .illustrationPickerGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .illustrationCandidateMeta strong { font-size: .74rem; }
   .illustrationEditorPanel { padding: 15px; }
+  .illustrationEditorActions { flex-wrap: wrap; }
+  .illustrationChangeButton { flex-basis: calc(100% - 62px); }
+  .illustrationEditorActions #illustrationEditorReset { order: 3; flex-basis: 100%; }
 }
+
