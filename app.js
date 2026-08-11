@@ -24,7 +24,11 @@ const state = {
   mapLayer: null,
   editor: null,
   editorPointer: null,
-  touchStart: null,
+  swipeGesture: null,
+  locationPickerMap: null,
+  locationPickerMarker: null,
+  pendingLocation: null,
+  lastGeocodeAt: 0,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -709,7 +713,7 @@ async function renderCapture(item) {
 
   $("#bestCommonName").textContent = best.commonNames?.[0] || best.scientificNameWithoutAuthor;
   const scientificLink = $("#bestScientificName");
-  scientificLink.textContent = best.scientificName;
+  scientificLink.textContent = best.scientificNameWithoutAuthor || best.scientificName;
   scientificLink.href = googleImagesUrl(best.scientificNameWithoutAuthor || best.scientificName);
 
   const verificationLabel = $("#verificationLabel");
@@ -762,7 +766,7 @@ async function renderCapture(item) {
     common.textContent = candidate.commonNames?.[0] || candidate.scientificNameWithoutAuthor;
     const scientific = document.createElement("a");
     scientific.className = "altScientific scientificLink";
-    scientific.textContent = candidate.scientificName;
+    scientific.textContent = candidate.scientificNameWithoutAuthor || candidate.scientificName;
     scientific.href = googleImagesUrl(candidate.scientificNameWithoutAuthor || candidate.scientificName);
     scientific.target = "_blank";
     scientific.rel = "noopener";
@@ -782,32 +786,206 @@ async function renderCapture(item) {
 function renderCaptureLocation(item) {
   const row = $("#captureLocationRow");
   row.innerHTML = "";
-  if (Number.isFinite(item.location?.latitude) && Number.isFinite(item.location?.longitude)) {
-    const text = document.createElement("span");
-    text.className = "locationText";
-    text.textContent = `Position enregistrée · ${item.location.latitude.toFixed(5)}, ${item.location.longitude.toFixed(5)}`;
-    row.appendChild(text);
-    return;
-  }
+
+  const hasLocation = Number.isFinite(item.location?.latitude) && Number.isFinite(item.location?.longitude);
   const text = document.createElement("span");
   text.className = "locationText";
-  text.textContent = "Aucune position associée à cette observation.";
+  if (hasLocation) {
+    const label = item.location.label ? `${item.location.label} · ` : "";
+    text.textContent = `Position enregistrée · ${label}${item.location.latitude.toFixed(5)}, ${item.location.longitude.toFixed(5)}`;
+  } else {
+    text.textContent = "Aucune position associée à cette observation.";
+  }
+
   const button = document.createElement("button");
   button.className = "secondaryButton";
   button.type = "button";
-  button.textContent = "Ajouter ma position actuelle";
-  button.addEventListener("click", async () => {
-    button.disabled = true;
-    const locationData = await getCurrentLocation(true);
-    button.disabled = false;
-    if (!locationData) return;
-    item.location = { ...locationData, source: "ajout_manuel" };
-    await dbPut(STORE_OBSERVATIONS, item);
-    renderCaptureLocation(item);
-    await renderMap();
-  });
+  button.textContent = hasLocation ? "Modifier la position" : "Ajouter une position";
+  button.addEventListener("click", () => openLocationPicker(item));
+
   row.append(text, button);
 }
+
+function setLocationPickerMode(mode) {
+  const isMap = mode === "map";
+  $("#locationMapMode").classList.toggle("hidden", !isMap);
+  $("#locationAddressMode").classList.toggle("hidden", isMap);
+  $("#locationMapModeButton").classList.toggle("active", isMap);
+  $("#locationAddressModeButton").classList.toggle("active", !isMap);
+  if (isMap) setTimeout(() => state.locationPickerMap?.invalidateSize(), 40);
+}
+
+function updatePendingLocation(locationData) {
+  state.pendingLocation = locationData;
+  const summary = $("#locationSelectionSummary");
+  const saveButton = $("#saveLocationButton");
+  if (!locationData) {
+    summary.textContent = "Aucune position sélectionnée.";
+    saveButton.disabled = true;
+    if (state.locationPickerMarker && state.locationPickerMap) {
+      state.locationPickerMap.removeLayer(state.locationPickerMarker);
+      state.locationPickerMarker = null;
+    }
+    return;
+  }
+
+  const label = locationData.label ? `${locationData.label} · ` : "";
+  summary.textContent = `${label}${locationData.latitude.toFixed(5)}, ${locationData.longitude.toFixed(5)}`;
+  saveButton.disabled = false;
+  placeLocationPickerMarker(locationData.latitude, locationData.longitude, false);
+}
+
+function ensureLocationPickerMap() {
+  if (state.locationPickerMap || !window.L) return;
+  state.locationPickerMap = L.map("locationPickerMap", { zoomControl: true }).setView([46.5, 2.5], 5);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributeurs',
+  }).addTo(state.locationPickerMap);
+
+  state.locationPickerMap.on("click", (event) => {
+    updatePendingLocation({
+      latitude: event.latlng.lat,
+      longitude: event.latlng.lng,
+      source: "carte_manuelle",
+      label: "",
+    });
+  });
+}
+
+function placeLocationPickerMarker(latitude, longitude, recenter = true) {
+  if (!state.locationPickerMap || !window.L) return;
+  if (!state.locationPickerMarker) {
+    state.locationPickerMarker = L.marker([latitude, longitude], { draggable: true }).addTo(state.locationPickerMap);
+    state.locationPickerMarker.on("dragend", () => {
+      const point = state.locationPickerMarker.getLatLng();
+      state.pendingLocation = {
+        latitude: point.lat,
+        longitude: point.lng,
+        source: "carte_manuelle",
+        label: "",
+      };
+      $("#locationSelectionSummary").textContent = `${point.lat.toFixed(5)}, ${point.lng.toFixed(5)}`;
+      $("#saveLocationButton").disabled = false;
+    });
+  } else {
+    state.locationPickerMarker.setLatLng([latitude, longitude]);
+  }
+  if (recenter) state.locationPickerMap.setView([latitude, longitude], Math.max(state.locationPickerMap.getZoom(), 14));
+}
+
+function openLocationPicker(item) {
+  const dialog = $("#locationPicker");
+  $("#locationPickerStatus").textContent = "";
+  $("#locationSearchResults").innerHTML = "";
+  $("#locationAddressInput").value = "";
+  setLocationPickerMode("map");
+  ensureLocationPickerMap();
+
+  const hasLocation = Number.isFinite(item.location?.latitude) && Number.isFinite(item.location?.longitude);
+  updatePendingLocation(hasLocation ? { ...item.location } : null);
+  dialog.showModal();
+
+  setTimeout(() => {
+    state.locationPickerMap?.invalidateSize();
+    if (hasLocation) placeLocationPickerMarker(item.location.latitude, item.location.longitude, true);
+  }, 80);
+}
+
+async function searchLocationAddress() {
+  const input = $("#locationAddressInput");
+  const status = $("#locationPickerStatus");
+  const resultsBox = $("#locationSearchResults");
+  const query = input.value.trim();
+  if (!query) {
+    status.textContent = "Saisissez une adresse ou un nom de lieu.";
+    input.focus();
+    return;
+  }
+
+  const wait = 1000 - (Date.now() - state.lastGeocodeAt);
+  if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+  state.lastGeocodeAt = Date.now();
+  status.textContent = "Recherche de l’adresse…";
+  resultsBox.innerHTML = "";
+
+  try {
+    const url = new URL("https://nominatim.openstreetmap.org/search");
+    url.searchParams.set("q", query);
+    url.searchParams.set("format", "jsonv2");
+    url.searchParams.set("limit", "5");
+    url.searchParams.set("addressdetails", "1");
+    url.searchParams.set("accept-language", "fr");
+    const response = await fetch(url.toString(), { headers: { Accept: "application/json" } });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const results = await response.json();
+    status.textContent = results.length ? "" : "Aucun lieu trouvé.";
+
+    results.forEach((result) => {
+      const latitude = Number(result.lat);
+      const longitude = Number(result.lon);
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "locationSearchResult";
+      button.textContent = result.display_name;
+      button.addEventListener("click", () => {
+        updatePendingLocation({
+          latitude,
+          longitude,
+          source: "adresse",
+          label: result.display_name,
+        });
+        setLocationPickerMode("map");
+        setTimeout(() => placeLocationPickerMarker(latitude, longitude, true), 40);
+      });
+      resultsBox.appendChild(button);
+    });
+  } catch (error) {
+    console.error(error);
+    status.textContent = "Impossible de rechercher cette adresse pour le moment.";
+  }
+}
+
+$("#locationMapModeButton").addEventListener("click", () => setLocationPickerMode("map"));
+$("#locationAddressModeButton").addEventListener("click", () => setLocationPickerMode("address"));
+$("#searchLocationAddressButton").addEventListener("click", searchLocationAddress);
+$("#locationAddressInput").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    searchLocationAddress();
+  }
+});
+
+$("#locationCurrentButton").addEventListener("click", async () => {
+  const button = $("#locationCurrentButton");
+  const status = $("#locationPickerStatus");
+  button.disabled = true;
+  status.textContent = "Recherche de votre position…";
+  const locationData = await getCurrentLocation(true);
+  button.disabled = false;
+  if (!locationData) {
+    status.textContent = "Impossible d’obtenir votre position actuelle.";
+    return;
+  }
+  status.textContent = "";
+  updatePendingLocation({ ...locationData, source: "position_actuelle", label: "Position actuelle" });
+  setLocationPickerMode("map");
+  setTimeout(() => placeLocationPickerMarker(locationData.latitude, locationData.longitude, true), 40);
+});
+
+$("#cancelLocationPickerButton").addEventListener("click", () => $("#locationPicker").close());
+
+$("#saveLocationButton").addEventListener("click", async () => {
+  if (!state.currentObservationId || !state.pendingLocation) return;
+  const item = await dbGet(STORE_OBSERVATIONS, state.currentObservationId);
+  if (!item) return;
+  item.location = { ...state.pendingLocation, addedAt: Date.now() };
+  await dbPut(STORE_OBSERVATIONS, item);
+  $("#locationPicker").close();
+  renderCaptureLocation(item);
+  await renderMap();
+});
 
 bestScore.addEventListener("click", async () => {
   if (!state.currentObservationId) return;
@@ -970,7 +1148,7 @@ async function renderHerbarium() {
   for (const species of speciesRows) {
     const observations = await getSpeciesObservations(species);
     const card = document.createElement("article");
-    card.className = "card speciesCard";
+    card.className = "card speciesEntry";
     const button = document.createElement("button");
     button.type = "button";
     button.className = "speciesCardButton";
@@ -1002,7 +1180,7 @@ async function renderHerbarium() {
     title.textContent = species.commonName || species.scientificNameWithoutAuthor;
     const scientific = document.createElement("div");
     scientific.className = "scientific";
-    scientific.textContent = species.scientificName;
+    scientific.textContent = species.scientificNameWithoutAuthor || species.scientificName;
     const meta = document.createElement("div");
     meta.className = "speciesCardMeta";
     const last = observations[0]?.captureAt || species.lastSeenAt;
@@ -1040,7 +1218,7 @@ async function renderSpecies(species) {
   const observations = await getSpeciesObservations(species);
   $("#speciesCommonName").textContent = species.commonName || species.scientificNameWithoutAuthor;
   const scientific = $("#speciesScientificName");
-  scientific.textContent = species.scientificName;
+  scientific.textContent = species.scientificNameWithoutAuthor || species.scientificName;
   scientific.href = googleImagesUrl(species.scientificNameWithoutAuthor || species.scientificName);
 
   const meta = $("#speciesMeta");
@@ -1051,10 +1229,6 @@ async function renderSpecies(species) {
     chip.textContent = text;
     meta.appendChild(chip);
   });
-
-  $("#speciesObservationSummary").textContent = observations.length
-    ? `${observations.length} observation${observations.length > 1 ? "s" : ""} · du ${formatDate(observations.at(-1)?.captureAt || species.firstSeenAt)} au ${formatDate(observations[0]?.captureAt || species.lastSeenAt)}`
-    : "Aucune capture associée.";
 
   const list = $("#speciesPhotoList");
   list.innerHTML = "";
@@ -1271,9 +1445,9 @@ async function openDraftPhotoEditor(index) {
   if (!photo) return;
   try {
     const image = await loadImageFromBlob(photo.file);
-    state.editor = { mode: "draft", index, image, rotation: 0, zoom: 1, panX: 0, panY: 0, aspect: "4:3" };
+    state.editor = { mode: "draft", index, image, rotation: 0, zoom: 1, panX: 0, panY: 0, aspect: "original" };
     editorZoom.value = "1";
-    setEditorAspect("4:3");
+    setEditorAspect("original");
     editorDialog.showModal();
   } catch {
     statusText.textContent = "Cette image ne peut pas être ouverte dans l’éditeur de ce navigateur.";
@@ -1286,9 +1460,9 @@ async function openStoredPhotoEditor(observationId, photoIndex, speciesId) {
   if (!photo?.blob) return;
   try {
     const image = await loadImageFromBlob(photo.blob);
-    state.editor = { mode: "stored", observationId, photoIndex, speciesId, image, rotation: 0, zoom: 1, panX: 0, panY: 0, aspect: "4:3" };
+    state.editor = { mode: "stored", observationId, photoIndex, speciesId, image, rotation: 0, zoom: 1, panX: 0, panY: 0, aspect: "original" };
     editorZoom.value = "1";
-    setEditorAspect("4:3");
+    setEditorAspect("original");
     editorDialog.showModal();
   } catch {
     $("#speciesNoteStatus").textContent = "Cette image ne peut pas être ouverte dans l’éditeur de ce navigateur.";
@@ -1338,6 +1512,9 @@ editorCanvas.addEventListener("pointercancel", () => { state.editorPointer = nul
 
 function exportEditedBlob() {
   return new Promise((resolve) => {
+    // Export exactly the framing currently visible in the editor.
+    clampEditorPan();
+    drawEditor();
     const aspect = editorCanvas.width / editorCanvas.height;
     const outputWidth = 1600;
     const outputHeight = Math.round(outputWidth / aspect);
@@ -1375,6 +1552,8 @@ $("#saveEditorButton").addEventListener("click", async () => {
       storedPhoto.blob = blob;
       storedPhoto.name = file.name;
       storedPhoto.type = file.type;
+      storedPhoto.editedAt = Date.now();
+      storedPhoto.cropAspect = editorCanvas.width / editorCanvas.height;
       await dbPut(STORE_OBSERVATIONS, observation);
     }
     closeEditor();
@@ -1430,40 +1609,234 @@ function launchConfetti() {
 }
 
 // ----- Mobile edge gestures -----
-function isEditorOpen() {
-  return editorDialog.open;
+function isBlockingDialogOpen() {
+  return Boolean(editorDialog.open || $("#locationPicker")?.open);
+}
+
+function mainViewIsActuallyOpen() {
+  return ["camera", "herbarium", "map"].includes(state.currentMainView)
+    && !views[state.currentMainView].classList.contains("hidden")
+    && views.capture.classList.contains("hidden")
+    && views.species.classList.contains("hidden");
+}
+
+function getSwipeIntent(touch) {
+  if (!mainViewIsActuallyOpen() || isBlockingDialogOpen()) return null;
+  const edge = 30;
+  const bottomEdge = 60;
+
+  if (touch.clientX <= edge && state.currentMainView !== "map") {
+    return { target: "map", axis: "x", sign: 1, side: "left" };
+  }
+  if (touch.clientX >= window.innerWidth - edge && state.currentMainView !== "herbarium") {
+    return { target: "herbarium", axis: "x", sign: -1, side: "right" };
+  }
+  if (touch.clientY >= window.innerHeight - bottomEdge && state.currentMainView !== "camera") {
+    return { target: "camera", axis: "y", sign: -1, side: "bottom" };
+  }
+  return null;
+}
+
+function resetSwipeInlineStyles(view) {
+  if (!view) return;
+  view.classList.remove("swipePreview", "swipePreviewLeft", "swipePreviewRight", "swipePreviewBottom", "swipeAnimating");
+  view.style.removeProperty("transform");
+  view.style.removeProperty("transition");
+  view.style.removeProperty("pointer-events");
+}
+
+function cleanupSwipeGesture({ keepTarget = false } = {}) {
+  const gesture = state.swipeGesture;
+  if (!gesture) return;
+  const source = views[gesture.source];
+  const target = views[gesture.target];
+
+  resetSwipeInlineStyles(source);
+  resetSwipeInlineStyles(target);
+  source.classList.remove("swipeSource");
+  document.documentElement.classList.remove("edgeSwiping");
+
+  if (!keepTarget && gesture.target !== state.currentMainView) {
+    target.classList.add("hidden");
+  }
+  state.swipeGesture = null;
+}
+
+function prepareSwipePreview(gesture) {
+  if (gesture.prepared) return;
+  gesture.prepared = true;
+
+  const source = views[gesture.source];
+  const target = views[gesture.target];
+  source.classList.add("swipeSource");
+  target.classList.remove("hidden");
+  target.classList.add("swipePreview", `swipePreview${gesture.side[0].toUpperCase()}${gesture.side.slice(1)}`);
+  target.style.pointerEvents = "none";
+
+  // The Herbier is already kept fresh by refreshAllLists(). Refresh again in
+  // the background, but never delay the gesture waiting for database work.
+  if (gesture.target === "herbarium") {
+    renderHerbarium().catch(console.error);
+  }
+
+  if (gesture.target === "map") {
+    renderMap().then(() => {
+      requestAnimationFrame(() => {
+        state.map?.invalidateSize();
+        requestAnimationFrame(() => state.map?.invalidateSize());
+      });
+    }).catch(console.error);
+  }
+}
+
+function swipeDistance(gesture, touch) {
+  if (gesture.axis === "x") {
+    return Math.max(0, Math.min(window.innerWidth, (touch.clientX - gesture.startX) * gesture.sign));
+  }
+  return Math.max(0, Math.min(window.innerHeight, (touch.clientY - gesture.startY) * gesture.sign));
+}
+
+function applySwipeProgress(gesture, distance) {
+  const source = views[gesture.source];
+  const target = views[gesture.target];
+  const extent = gesture.axis === "x" ? window.innerWidth : window.innerHeight;
+  const progress = Math.max(0, Math.min(1, distance / extent));
+  gesture.progress = progress;
+
+  if (gesture.side === "left") {
+    target.style.transform = `translate3d(${(-100 + progress * 100).toFixed(3)}vw, 0, 0)`;
+    source.style.transform = `translate3d(${(progress * 14).toFixed(3)}vw, 0, 0)`;
+  } else if (gesture.side === "right") {
+    target.style.transform = `translate3d(${(100 - progress * 100).toFixed(3)}vw, 0, 0)`;
+    source.style.transform = `translate3d(${(-progress * 14).toFixed(3)}vw, 0, 0)`;
+  } else {
+    target.style.transform = `translate3d(0, ${(100 - progress * 100).toFixed(3)}vh, 0)`;
+    source.style.transform = `translate3d(0, ${(-progress * 8).toFixed(3)}vh, 0)`;
+  }
+}
+
+function animateSwipeTo(gesture, completed) {
+  const source = views[gesture.source];
+  const target = views[gesture.target];
+  source.classList.add("swipeAnimating");
+  target.classList.add("swipeAnimating");
+
+  requestAnimationFrame(() => {
+    if (completed) {
+      target.style.transform = "translate3d(0, 0, 0)";
+      if (gesture.side === "left") source.style.transform = "translate3d(18vw, 0, 0)";
+      else if (gesture.side === "right") source.style.transform = "translate3d(-18vw, 0, 0)";
+      else source.style.transform = "translate3d(0, -10vh, 0)";
+    } else {
+      if (gesture.side === "left") target.style.transform = "translate3d(-100vw, 0, 0)";
+      else if (gesture.side === "right") target.style.transform = "translate3d(100vw, 0, 0)";
+      else target.style.transform = "translate3d(0, 100vh, 0)";
+      source.style.transform = "translate3d(0, 0, 0)";
+    }
+  });
+
+  window.setTimeout(async () => {
+    if (state.swipeGesture !== gesture) return;
+
+    if (completed) {
+      const targetName = gesture.target;
+      hideAllViews();
+      views[targetName].classList.remove("hidden");
+      state.currentMainView = targetName;
+      $$("#mainNavigation [data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === targetName));
+      window.scrollTo({ top: 0, behavior: "instant" });
+
+      if (targetName === "map") {
+        await renderMap();
+        setTimeout(() => state.map?.invalidateSize(), 30);
+      } else if (targetName === "herbarium") {
+        await renderHerbarium();
+      }
+
+      cleanupSwipeGesture({ keepTarget: true });
+    } else {
+      cleanupSwipeGesture();
+    }
+  }, 245);
 }
 
 document.addEventListener("touchstart", (event) => {
-  if (isEditorOpen() || event.touches.length !== 1) return;
+  if (event.touches.length !== 1 || isBlockingDialogOpen()) return;
   const touch = event.touches[0];
-  state.touchStart = {
-    x: touch.clientX,
-    y: touch.clientY,
-    left: touch.clientX <= 28,
-    right: touch.clientX >= window.innerWidth - 28,
-    bottom: touch.clientY >= window.innerHeight - 48,
+  const intent = getSwipeIntent(touch);
+  if (!intent) {
+    state.swipeGesture = null;
+    return;
+  }
+
+  state.swipeGesture = {
+    ...intent,
+    source: state.currentMainView,
+    startX: touch.clientX,
+    startY: touch.clientY,
+    startTime: performance.now(),
+    lastTime: performance.now(),
+    lastDistance: 0,
+    progress: 0,
+    velocity: 0,
+    active: false,
+    prepared: false,
   };
-}, { passive: true });
+}, { passive: true, capture: true });
 
-document.addEventListener("touchend", (event) => {
-  if (!state.touchStart || isEditorOpen() || !event.changedTouches.length) return;
-  const touch = event.changedTouches[0];
-  const dx = touch.clientX - state.touchStart.x;
-  const dy = touch.clientY - state.touchStart.y;
-  const start = state.touchStart;
-  state.touchStart = null;
+document.addEventListener("touchmove", (event) => {
+  const gesture = state.swipeGesture;
+  if (!gesture || event.touches.length !== 1 || isBlockingDialogOpen()) return;
 
-  if (start.left && dx > 72 && Math.abs(dy) < 85) {
-    showMainView("map");
+  const touch = event.touches[0];
+  const dx = touch.clientX - gesture.startX;
+  const dy = touch.clientY - gesture.startY;
+  const primary = gesture.axis === "x" ? Math.abs(dx) : Math.abs(dy);
+  const secondary = gesture.axis === "x" ? Math.abs(dy) : Math.abs(dx);
+  const isCorrectDirection = gesture.axis === "x" ? dx * gesture.sign > 0 : dy * gesture.sign > 0;
+
+  if (!gesture.active) {
+    if (primary < 8) return;
+    if (!isCorrectDirection || secondary > primary * 0.9) {
+      state.swipeGesture = null;
+      return;
+    }
+    gesture.active = true;
+    document.documentElement.classList.add("edgeSwiping");
+    prepareSwipePreview(gesture);
+    if (state.swipeGesture === gesture) {
+      applySwipeProgress(gesture, swipeDistance(gesture, touch));
+    }
+  }
+
+  event.preventDefault();
+  const distance = swipeDistance(gesture, touch);
+  const now = performance.now();
+  gesture.velocity = (distance - gesture.lastDistance) / Math.max(1, now - gesture.lastTime);
+  gesture.lastDistance = distance;
+  gesture.lastTime = now;
+
+  if (gesture.prepared) applySwipeProgress(gesture, distance);
+}, { passive: false, capture: true });
+
+document.addEventListener("touchend", () => {
+  const gesture = state.swipeGesture;
+  if (!gesture) return;
+  if (!gesture.active) {
+    state.swipeGesture = null;
     return;
   }
-  if (start.right && dx < -72 && Math.abs(dy) < 85) {
-    showMainView("herbarium");
-    return;
-  }
-  if (start.bottom && dy < -82 && Math.abs(dx) < 95) showMainView("camera");
-}, { passive: true });
+  const completed = gesture.progress >= 0.28
+    || (gesture.progress >= 0.08 && Number(gesture.velocity || 0) > 0.55);
+  animateSwipeTo(gesture, completed);
+}, { passive: true, capture: true });
+
+document.addEventListener("touchcancel", () => {
+  const gesture = state.swipeGesture;
+  if (!gesture) return;
+  if (gesture.active) animateSwipeTo(gesture, false);
+  else state.swipeGesture = null;
+}, { passive: true, capture: true });
 
 $("#clearHistoryButton").addEventListener("click", async () => {
   if (!confirm("Effacer toutes les observations et toutes les espèces de l’herbier enregistrées sur cet appareil ?")) return;
