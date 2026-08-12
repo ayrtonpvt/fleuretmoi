@@ -1,11 +1,11 @@
-const CACHE = "fleuretmoi-pages-v22";
+const CACHE = "fleuretmoi-pages-v23";
 const BASE = new URL("./", self.location.href);
 const APP_SHELL = [
   "",
   "index.html",
   "styles.css",
-  "app.js?v=22",
-  "illustration-picker.js?v=22",
+  "app.js?v=23",
+  "illustration-picker.js?v=23",
   "illustration-test.html",
   "illustration-test.css",
   "illustration-test.js",

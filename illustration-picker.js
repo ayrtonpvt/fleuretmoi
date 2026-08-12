@@ -8,6 +8,8 @@
   const CROP_ASPECT = 4 / 5;
   const WEIGHTS = { A: 34, C: 19, D: 18, E: 12, F: 10, P: 7 };
   const QUALITY_THRESHOLD = 58;
+  const FALLBACK_MIN_STRICT = 12;
+  const FALLBACK_METADATA_BATCH = 10;
   const analysisCache = new Map();
 
   const picker = {
@@ -169,12 +171,9 @@
     picker.subtitle.textContent = species.scientificNameWithoutAuthor || species.scientificName || "";
     picker.grid.innerHTML = "";
     picker.more.hidden = true;
-    // chooseCandidate() désactive ce bouton pendant le téléchargement. Si la
-    // fenêtre est fermée après un choix puis rouverte, cet état DOM persistait
-    // et « Afficher 6 autres » restait bloqué malgré un nouvel état de picker.
     picker.more.disabled = false;
     setPickerProgress(0, false);
-    setPickerStatus("Recherche de la catégorie botanique exacte…");
+    setPickerStatus("Recherche des illustrations botaniques exactes…");
     picker.dialog.showModal();
 
     try {
@@ -188,20 +187,16 @@
         return;
       }
 
-      const category = `Category:${scientificName} - botanical illustrations`;
-      const exists = await categoryExists(category);
+      const discovery = await discoverCommonsIllustrations(scientificName, token);
       if (token !== pickerState.token) return;
-      if (!exists) throw new Error(`Aucune catégorie Commons exacte « ${scientificName} - botanical illustrations » n’a été trouvée. Fleuretmoi n’élargit pas automatiquement à une autre espèce.`);
-
-      setPickerStatus("Récupération des illustrations de l’espèce…");
-      const members = await fetchAllCategoryFiles(category);
-      if (!members.length) throw new Error("Cette catégorie ne contient aucune illustration directe.");
-      const meta = await fetchFileMetadata(members.map((m) => m.title));
-      if (token !== pickerState.token) return;
+      const meta = discovery.items;
+      if (!meta.length) {
+        throw new Error(`Aucune illustration botanique fiable de « ${scientificName} » n’a été trouvée sur Wikimedia Commons.`);
+      }
 
       const candidates = meta.filter((item) => item.thumbUrl).map((item) => ({
         ...item,
-        otherSpecies: detectOtherIllustratedSpecies(item.categories, category),
+        otherSpecies: detectOtherIllustratedSpecies(item.categories, scientificName),
         analysis: null,
         cropAnalysis: null,
         cropScore: null,
@@ -230,7 +225,10 @@
       pickerState.ranked = ranked;
       renderPickerGrid();
       setPickerProgress(100, false);
-      setPickerStatus(`${ranked.length} propositions classées. Choisis-en une ou affiche les suivantes.`);
+      const fallbackNote = discovery.usedFallback
+        ? ` ${discovery.fallbackAccepted} illustration${discovery.fallbackAccepted > 1 ? "s" : ""} repérée${discovery.fallbackAccepted > 1 ? "s" : ""} dans la catégorie générale de l’espèce.`
+        : "";
+      setPickerStatus(`${ranked.length} propositions classées.${fallbackNote} Choisis-en une ou affiche les suivantes.`);
     } catch (error) {
       console.error(error);
       setPickerProgress(0, false);
@@ -563,6 +561,57 @@
     return files;
   }
 
+  async function discoverCommonsIllustrations(scientificName, token) {
+    const strictCategory = `Category:${scientificName} - botanical illustrations`;
+    const generalCategory = `Category:${scientificName}`;
+    const byTitle = new Map();
+    let strictCount = 0;
+    let usedFallback = false;
+    let fallbackAccepted = 0;
+
+    setPickerStatus("Recherche de la catégorie d’illustrations botaniques exacte…");
+    const strictExists = await categoryExists(strictCategory);
+    if (token !== pickerState.token) return { items: [], usedFallback: false, fallbackAccepted: 0 };
+
+    if (strictExists) {
+      setPickerStatus("Récupération des illustrations botaniques exactes…");
+      const strictMembers = await fetchAllCategoryFiles(strictCategory);
+      const strictMeta = await fetchFileMetadata(strictMembers.map((m) => m.title));
+      for (const item of strictMeta) {
+        item.discovery = "strict";
+        item.illustrationEvidence = "catégorie botanique exacte";
+        byTitle.set(normalizeTitle(item.title), item);
+      }
+      strictCount = strictMeta.length;
+    }
+
+    // Une catégorie très fournie suffit. Si elle n’existe pas ou contient peu
+    // d’images, on inspecte la catégorie générale de L’ESPÈCE — jamais celle
+    // d’une espèce voisine — et on applique un filtre très conservateur qui
+    // cherche des preuves d’illustration avant toute analyse esthétique.
+    if (!strictExists || strictCount < FALLBACK_MIN_STRICT) {
+      usedFallback = true;
+      setPickerStatus("Recherche complémentaire dans la catégorie exacte de l’espèce…");
+      const generalExists = await categoryExists(generalCategory);
+      if (generalExists) {
+        const generalMembers = await fetchAllCategoryFiles(generalCategory);
+        if (token !== pickerState.token) return { items: [], usedFallback, fallbackAccepted: 0 };
+        setPickerStatus(`Filtrage des illustrations parmi ${generalMembers.length} fichiers de l’espèce…`);
+        const generalMeta = await fetchFileMetadata(generalMembers.map((m) => m.title));
+        const filtered = await filterGeneralCategoryIllustrations(generalMeta, scientificName, token);
+        for (const item of filtered) {
+          const key = normalizeTitle(item.title);
+          if (byTitle.has(key)) continue;
+          item.discovery = "general-category";
+          byTitle.set(key, item);
+          fallbackAccepted += 1;
+        }
+      }
+    }
+
+    return { items: [...byTitle.values()], usedFallback, fallbackAccepted, strictCount };
+  }
+
   async function fetchFileMetadata(titles) {
     const out = [];
     for (let i = 0; i < titles.length; i += 40) {
@@ -600,6 +649,137 @@
     return out;
   }
 
+  async function filterGeneralCategoryIllustrations(items, scientificName, token) {
+    const accepted = [];
+    const uncertain = [];
+
+    for (const item of items) {
+      const basic = basicIllustrationEvidence(item);
+      if (basic.curated) {
+        item.illustrationEvidence = basic.reason;
+        accepted.push(item);
+      } else if (!basic.obviousPhoto && basic.score >= 18) {
+        // Seuls les fichiers ayant déjà au moins un indice documentaire sont
+        // soumis à extmetadata/EXIF. Cela évite des dizaines de requêtes lourdes
+        // sur des photos manifestes tout en gardant les scans mal catégorisés.
+        uncertain.push(item);
+      }
+    }
+
+    for (let i = 0; i < uncertain.length; i += FALLBACK_METADATA_BATCH) {
+      if (token !== pickerState.token) return [];
+      const batch = uncertain.slice(i, i + FALLBACK_METADATA_BATCH);
+      const details = await fetchClassifierMetadata(batch.map((item) => item.title));
+      for (const item of batch) {
+        const detail = details.get(normalizeTitle(item.title)) || {};
+        const verdict = classifyIllustrationCandidate(item, detail, scientificName);
+        if (!verdict.accept) continue;
+        item.illustrationEvidence = verdict.reason;
+        accepted.push(item);
+      }
+      setPickerStatus(`Filtrage documentaire des illustrations : ${Math.min(i + FALLBACK_METADATA_BATCH, uncertain.length)}/${uncertain.length}…`);
+    }
+
+    return accepted;
+  }
+
+  function basicIllustrationEvidence(item) {
+    const categories = (item.categories || []).map(normalizeTitle);
+    const title = normalizeTitle(item.title.replace(/^File:/i, ""));
+    if (categories.some((cat) => /botanical illustrations?\b/.test(cat))) {
+      return { curated: true, score: 100, obviousPhoto: false, reason: "catégorie Commons d’illustrations botaniques" };
+    }
+
+    let score = 0;
+    const text = `${title} ${categories.join(" ")}`;
+    if (/\b(?:botanical|botanique|botanisch|botanica)\b.*\b(?:illustration|plate|drawing|art)\b/.test(text)) score += 70;
+    if (/\b(?:illustration|illustrations|illustrated|plate|plates|chromolithograph|chromolithography|lithograph|lithography|engraving|engraved|woodcut|gouache|watercolou?r|aquarelle)\b/.test(text)) score += 45;
+    if (/\b(?:flora|flore|floræ|florilegium|botanical register|botanical magazine|icones?|herbal|herbier illustré)\b/.test(text)) score += 28;
+    if (/\b(?:biodiversity heritage library|files from the biodiversity heritage library|bhl)\b/.test(text)) score += 24;
+    if (/\b(?:drawings?|paintings?|prints?|engravings?|lithographs?) of plants\b/.test(text)) score += 45;
+
+    const obviousPhoto = /\b(?:dsc[_ -]?\d|img[_ -]?\d|pxl[_ -]?\d|iphone|smartphone|photographs? by|taken with|camera model)\b/.test(text)
+      || /\b(?:botanic(?:al)? garden|jardin botanique|huntington botanical gardens|brooklyn botanic garden)\b/.test(title)
+      || /\b20\d{2}[-_.]\d{2}[-_.]\d{2}\b/.test(title);
+    if (obviousPhoto) score -= 70;
+    return { curated: false, score, obviousPhoto, reason: "indices documentaires" };
+  }
+
+  async function fetchClassifierMetadata(titles) {
+    const out = new Map();
+    for (let i = 0; i < titles.length; i += FALLBACK_METADATA_BATCH) {
+      const batch = titles.slice(i, i + FALLBACK_METADATA_BATCH);
+      const data = await commonsGet({
+        action: "query",
+        prop: "imageinfo",
+        titles: batch.join("|"),
+        iiprop: "metadata|extmetadata",
+      });
+      for (const page of Object.values(data?.query?.pages || {})) {
+        const ii = page.imageinfo?.[0] || {};
+        out.set(normalizeTitle(page.title), {
+          extmetadata: ii.extmetadata || {},
+          metadata: ii.metadata || [],
+        });
+      }
+    }
+    return out;
+  }
+
+  function classifyIllustrationCandidate(item, detail) {
+    const basic = basicIllustrationEvidence(item);
+    const ext = detail.extmetadata || {};
+    const exif = detail.metadata || [];
+    const extText = Object.entries(ext)
+      .filter(([key]) => ["ImageDescription", "ObjectName", "Credit", "Artist", "DateTimeOriginal"].includes(key))
+      .map(([, value]) => stripHtml(value?.value || value || ""))
+      .join(" ");
+    const exifText = exif.map((entry) => `${entry?.name || ""} ${metadataValueToText(entry?.value)}`).join(" ");
+    const allText = normalizeTitle(`${item.title} ${(item.categories || []).join(" ")} ${extText} ${exifText}`);
+
+    let score = basic.score;
+    const reasons = [];
+    if (/\b(?:botanical illustrations?|botanical plates?|botanical drawings?)\b/.test(allText)) { score += 90; reasons.push("illustration botanique"); }
+    if (/\b(?:chromolithograph|chromolithography|lithograph|lithography|engraving|engraved|woodcut|etching|gouache|watercolou?r|aquarelle)\b/.test(allText)) { score += 62; reasons.push("technique graphique"); }
+    if (/\b(?:illustrated(?: with)?|colou?red plates?|color plates?|plate\s+\d+|pl\.\s*\d+|illustration|drawing|painting)\b/.test(allText)) { score += 48; reasons.push("planche/illustration"); }
+    if (/\b(?:flora|flore|floræ|florilegium|botanical register|botanical magazine|icones?|herbal)\b/.test(allText)) { score += 30; reasons.push("ouvrage botanique"); }
+    if (/\b(?:biodiversity heritage library|files from the biodiversity heritage library|bhl page|bhl)\b/.test(allText)) { score += 26; reasons.push("BHL"); }
+    if (/\b(?:public domain scan|pd-scan|mechanical scan|scanned from|scan of)\b/.test(allText)) score += 18;
+
+    const cameraNames = new Set(["make", "model", "exposuretime", "fnumber", "isospeedratings", "isospeed", "focallength", "lensmodel", "exposureprogram"]);
+    const cameraFields = exif.filter((entry) => cameraNames.has(normalizeTitle(entry?.name))).length;
+    const photoText = /\b(?:this photo was taken|photograph(?:ed|s|y)? by|own work|camera model|taken with)\b/.test(allText);
+    const modernPhotoTitle = /\b(?:dsc[_ -]?\d|img[_ -]?\d|pxl[_ -]?\d|iphone|smartphone)\b/.test(allText)
+      || /\b20\d{2}[-_.]\d{2}[-_.]\d{2}\b/.test(normalizeTitle(item.title));
+    const year = extractPlausibleYear(`${stripHtml(ext.DateTimeOriginal?.value || "")} ${item.title}`);
+    const historical = year && year <= 1950;
+
+    // Une catégorie Commons explicitement botanique reste une preuve forte,
+    // même si le scan contient des métadonnées techniques de numérisation.
+    if (basic.curated) return { accept: true, score: 100, reason: basic.reason };
+
+    // Pour le fallback, on privilégie volontairement la précision : une photo
+    // dotée d’EXIF/appareil n’est jamais admise sur la seule base de son nom.
+    if ((cameraFields >= 2 || photoText || modernPhotoTitle) && score < 105) {
+      return { accept: false, score, reason: "indices photographiques" };
+    }
+    if (historical && score >= 58) return { accept: true, score, reason: reasons.slice(0, 2).join(" + ") || "illustration historique" };
+    if (score >= 82 && cameraFields < 2 && !photoText) return { accept: true, score, reason: reasons.slice(0, 2).join(" + ") || "indices d’illustration" };
+    return { accept: false, score, reason: "preuve insuffisante" };
+  }
+
+  function metadataValueToText(value) {
+    if (value == null) return "";
+    if (typeof value === "string" || typeof value === "number") return String(value);
+    try { return JSON.stringify(value); } catch { return String(value); }
+  }
+
+  function extractPlausibleYear(text) {
+    const matches = String(text || "").match(/\b(1[5-9]\d{2}|20\d{2})\b/g) || [];
+    const years = matches.map(Number).filter((year) => year >= 1500 && year <= new Date().getFullYear());
+    return years.length ? Math.min(...years) : 0;
+  }
+
   async function fetchSelectionAsset(title) {
     const data = await commonsGet({ action: "query", prop: "imageinfo", titles: title, iiprop: "url|size|mime|extmetadata", iiurlwidth: "1800" });
     const page = Object.values(data?.query?.pages || {})[0];
@@ -618,9 +798,8 @@
     };
   }
 
-  function detectOtherIllustratedSpecies(categories, targetCategory) {
-    const targetTaxon = targetCategory.replace(/^Category:/i, "").replace(/ - botanical illustrations$/i, "").trim();
-    const targetBinomial = binomialKey(targetTaxon);
+  function detectOtherIllustratedSpecies(categories, scientificName) {
+    const targetBinomial = binomialKey(scientificName);
     return unique((categories || [])
       .filter((cat) => / - botanical illustrations$/i.test(cat))
       .map((cat) => cat.replace(/^Category:/i, "").replace(/ - botanical illustrations$/i, "").trim())
