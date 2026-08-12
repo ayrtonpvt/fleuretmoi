@@ -105,6 +105,7 @@
     if (!button || !media) return;
 
     media.innerHTML = "";
+    media.classList.remove("hasIllustration");
     if (actions) actions.hidden = true;
     if (source) {
       source.hidden = true;
@@ -130,6 +131,7 @@
       img.alt = `Illustration botanique de ${species.scientificNameWithoutAuthor || species.scientificName}`;
       img.src = blobUrl(blob, "speciesObjectUrls");
       media.appendChild(img);
+      media.classList.add("hasIllustration");
       button.setAttribute("aria-label", "Ajuster l’illustration botanique");
       button.onclick = () => openExistingIllustrationEditor(species);
 

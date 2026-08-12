@@ -35,6 +35,8 @@ const state = {
   handlingPopState: false,
   historyVisibleCount: 60,
   herbariumSort: "alpha",
+  deferredRefreshTimer: null,
+  speciesOpenedFromHerbarium: false,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -904,6 +906,51 @@ function hideAllViews() {
   Object.values(views).forEach((view) => view.classList.add("hidden"));
 }
 
+function prefersReducedMotion() {
+  return Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
+}
+
+async function switchToView(view, { hideNavigation = false, scrollY = null } = {}) {
+  const swap = () => {
+    hideAllViews();
+    view.classList.remove("hidden");
+    mainNavigation.classList.toggle("hidden", hideNavigation);
+    // Restaurer le scroll pendant le swap permet à la View Transition de
+    // capturer directement le bon état de destination, sans flash à scroll 0.
+    if (Number.isFinite(scrollY)) window.scrollTo({ top: scrollY, behavior: "instant" });
+  };
+
+  if (document.startViewTransition && !prefersReducedMotion()) {
+    try {
+      const transition = document.startViewTransition(swap);
+      await transition.updateCallbackDone;
+      return;
+    } catch (error) {
+      console.warn("Transition de vue indisponible", error);
+    }
+  }
+  swap();
+}
+
+async function decodeImagesIn(container) {
+  if (!container) return;
+  const images = [...container.querySelectorAll("img")].filter((img) => img.src);
+  await Promise.all(images.map(async (img) => {
+    try {
+      if (!img.complete) await img.decode();
+      else if (typeof img.decode === "function") await img.decode();
+    } catch { /* Une image distante ne doit pas bloquer la navigation. */ }
+  }));
+}
+
+function deferRefreshAllLists(delay = 250) {
+  if (state.deferredRefreshTimer) clearTimeout(state.deferredRefreshTimer);
+  state.deferredRefreshTimer = setTimeout(() => {
+    state.deferredRefreshTimer = null;
+    refreshAllLists().catch((error) => console.error("Actualisation différée impossible", error));
+  }, delay);
+}
+
 function makeHistoryState(route, depth = state.navDepth) {
   return { fleuretmoi: true, route, depth };
 }
@@ -920,19 +967,26 @@ function recordRoute(route, mode = "push") {
   history.pushState(makeHistoryState(route, state.navDepth), "", location.href);
 }
 
-async function showMainView(name, { historyMode = "push" } = {}) {
+async function showMainView(name, { historyMode = "push", preserveHerbarium = false, restoreScrollY = null } = {}) {
   if (!["camera", "herbarium", "map"].includes(name)) name = "camera";
-  hideAllViews();
-  views[name].classList.remove("hidden");
-  mainNavigation.classList.remove("hidden");
+
+  // Quand on revient d’une fiche d’espèce vers l’Herbier, le DOM de la liste
+  // existe toujours derrière la vue détail. Ne pas le reconstruire permet un
+  // vrai retour à l’état exact (recherche, tri, images et position de scroll).
+  if (name === "herbarium" && !preserveHerbarium) await renderHerbarium();
+
   state.currentMainView = name;
   state.currentObservationId = null;
   state.currentSpeciesId = null;
+  $$("#mainNavigation [data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === name));
+
+  const destinationScroll = Number.isFinite(restoreScrollY) ? restoreScrollY : 0;
+  await switchToView(views[name], { hideNavigation: false, scrollY: destinationScroll });
+  // Les URL Blob de l’ancienne vue ne sont révoquées qu’après la capture de
+  // transition, sinon les photos disparaissent une frame avant le changement.
   clearObjectUrls("detailObjectUrls");
   clearObjectUrls("speciesObjectUrls");
-  $$("#mainNavigation [data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === name));
-  window.scrollTo({ top: 0, behavior: "instant" });
-  if (name === "herbarium") await renderHerbarium();
+
   if (name === "map") {
     await renderMap();
     setTimeout(() => state.map?.invalidateSize(), 50);
@@ -951,10 +1005,8 @@ async function openCapture(id, returnTarget = { type: "main", value: state.curre
   state.currentObservationId = id;
   state.captureReturn = returnTarget;
   await renderCapture(item);
-  hideAllViews();
-  views.capture.classList.remove("hidden");
-  mainNavigation.classList.add("hidden");
-  window.scrollTo({ top: 0, behavior: "instant" });
+  await decodeImagesIn($("#capturePhotoGrid"));
+  await switchToView(views.capture, { hideNavigation: true, scrollY: 0 });
   recordRoute({ type: "capture", id, returnTarget }, historyMode);
   return true;
 }
@@ -973,8 +1025,8 @@ async function closeCapture() {
 
 $("#backCaptureButton").addEventListener("click", closeCapture);
 
-async function renderCapture(item) {
-  clearObjectUrls("detailObjectUrls");
+async function renderCapture(item, { preserveMedia = false } = {}) {
+  if (!preserveMedia) clearObjectUrls("detailObjectUrls");
   const result = getResultFromObservation(item);
   const { selection, candidate: best } = getSelectedCandidateInfo(item);
   if (!best) return;
@@ -982,17 +1034,19 @@ async function renderCapture(item) {
   $("#captureDate").textContent = formatDate(item.captureAt || item.createdAt, true);
   $("#captureDateInput").value = toDateTimeLocalValue(item.captureAt || item.createdAt);
   const capturePhotoGrid = $("#capturePhotoGrid");
-  capturePhotoGrid.innerHTML = "";
   const photos = Array.isArray(item.photos) ? item.photos : [];
   $("#legacyPhotoNote").classList.toggle("hidden", photos.length > 0);
-  photos.forEach((photo, index) => {
-    if (!photo.blob) return;
-    const img = document.createElement("img");
-    img.src = blobUrl(photo.blob, "detailObjectUrls");
-    img.alt = `Photo ${index + 1} de l’observation`;
-    img.loading = "lazy";
-    capturePhotoGrid.appendChild(img);
-  });
+  if (!preserveMedia) {
+    capturePhotoGrid.innerHTML = "";
+    photos.forEach((photo, index) => {
+      if (!photo.blob) return;
+      const img = document.createElement("img");
+      img.src = blobUrl(photo.blob, "detailObjectUrls");
+      img.alt = `Photo ${index + 1} de l’observation`;
+      img.loading = "eager";
+      capturePhotoGrid.appendChild(img);
+    });
+  }
 
   $("#bestCommonName").textContent = best.commonNames?.[0] || best.scientificNameWithoutAuthor;
   const scientificLink = $("#bestScientificName");
@@ -1109,12 +1163,14 @@ async function renderCapture(item) {
         await setObservationSelection(latest, { type: "plantnet", index });
       }
       const updated = await dbGet(STORE_OBSERVATIONS, item.id);
-      await renderCapture(updated);
+      await renderCapture(updated, { preserveMedia: true });
       if (isNew) {
         $("#newSpeciesMessage").classList.remove("hidden");
         launchConfetti();
+        deferRefreshAllLists(1750);
+      } else {
+        deferRefreshAllLists(180);
       }
-      await refreshAllLists();
     });
     right.append(score, choose);
     row.append(left, right);
@@ -1335,14 +1391,33 @@ bestScore.addEventListener("click", async () => {
   if (!state.currentObservationId) return;
   const item = await dbGet(STORE_OBSERVATIONS, state.currentObservationId);
   if (!item || item.verified) return;
-  const { isNew } = await assignObservationToSpecies(item, getObservationSelection(item));
-  const updated = await dbGet(STORE_OBSERVATIONS, item.id);
-  await renderCapture(updated);
-  if (isNew) {
-    $("#newSpeciesMessage").classList.remove("hidden");
-    launchConfetti();
+
+  // Retour visuel immédiat : l’écriture IndexedDB et la reconstruction des
+  // listes ne doivent pas donner l’impression que le bouton n’a pas répondu.
+  const oldMarkup = bestScore.innerHTML;
+  bestScore.disabled = true;
+  bestScore.classList.add("verified");
+  bestScore.innerHTML = checkSvg();
+  await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+
+  try {
+    const { isNew } = await assignObservationToSpecies(item, getObservationSelection(item));
+    const updated = await dbGet(STORE_OBSERVATIONS, item.id);
+    await renderCapture(updated, { preserveMedia: true });
+    if (isNew) {
+      $("#newSpeciesMessage").classList.remove("hidden");
+      launchConfetti();
+      // Ne pas faire tourner renderHerbarium/renderMap pendant les confettis.
+      deferRefreshAllLists(1750);
+    } else {
+      deferRefreshAllLists(180);
+    }
+  } catch (error) {
+    bestScore.disabled = false;
+    bestScore.classList.remove("verified");
+    bestScore.innerHTML = oldMarkup;
+    throw error;
   }
-  await refreshAllLists();
 });
 
 $("#unverifyIdentificationButton").addEventListener("click", async () => {
@@ -1408,12 +1483,14 @@ $("#saveManualIdentificationButton").addEventListener("click", async () => {
   }
   $("#manualIdentificationDialog").close();
   const updated = await dbGet(STORE_OBSERVATIONS, item.id);
-  await renderCapture(updated);
+  await renderCapture(updated, { preserveMedia: true });
   if (isNew) {
     $("#newSpeciesMessage").classList.remove("hidden");
     launchConfetti();
+    deferRefreshAllLists(1750);
+  } else {
+    deferRefreshAllLists(180);
   }
-  await refreshAllLists();
 });
 
 $("#saveCaptureDateButton").addEventListener("click", async () => {
@@ -1786,21 +1863,41 @@ async function openSpecies(id, { historyMode = "push" } = {}) {
     await showMainView("herbarium", { historyMode: historyMode === "none" ? "none" : "replace" });
     return false;
   }
+
+  const openedFromHerbarium = !views.herbarium.classList.contains("hidden");
+  state.speciesOpenedFromHerbarium = openedFromHerbarium;
+
+  // Juste avant de pousser la fiche d’espèce dans l’historique, enrichir
+  // l’entrée Herbier courante avec sa position exacte. Le bouton retour et le
+  // bouton Retour d’Android peuvent ainsi restaurer la liste sans rerender.
+  if (openedFromHerbarium && historyMode === "push" && !state.handlingPopState) {
+    const currentDepth = Math.max(0, Number(history.state?.depth ?? state.navDepth ?? 0));
+    history.replaceState(makeHistoryState({
+      type: "main",
+      value: "herbarium",
+      preserveHerbarium: true,
+      scrollY: window.scrollY,
+    }, currentDepth), "", location.href);
+  }
+
   state.currentSpeciesId = id;
   await renderSpecies(species);
-  hideAllViews();
-  views.species.classList.remove("hidden");
-  mainNavigation.classList.add("hidden");
-  window.scrollTo({ top: 0, behavior: "instant" });
+  await decodeImagesIn(views.species);
+  await switchToView(views.species, { hideNavigation: true, scrollY: 0 });
   recordRoute({ type: "species", id }, historyMode);
   return true;
 }
 
 $("#backSpeciesButton").addEventListener("click", async () => {
-  if (history.state?.fleuretmoi && Number(history.state.depth || 0) > 0) {
+  // Depuis l’Herbier, utiliser la vraie entrée précédente : elle contient le
+  // snapshot de scroll et permet un retour sans reconstruction ni flash.
+  if (state.speciesOpenedFromHerbarium && history.state?.fleuretmoi && Number(history.state.depth || 0) > 0) {
     history.back();
     return;
   }
+
+  // Si la fiche a été ouverte depuis une observation, le bouton reste bien un
+  // retour vers l’Herbier (et non vers l’observation).
   state.currentSpeciesId = null;
   clearObjectUrls("speciesObjectUrls");
   await showMainView("herbarium", { historyMode: "replace" });
@@ -2646,8 +2743,19 @@ async function renderHistoryRoute(route) {
     await openSpecies(route.id, { historyMode: "none" });
     return;
   }
-  await showMainView(route.value || "camera", { historyMode: "none" });
+  const mainView = route.value || "camera";
+  if (mainView === "herbarium" && route.preserveHerbarium) {
+    await showMainView("herbarium", {
+      historyMode: "none",
+      preserveHerbarium: true,
+      restoreScrollY: Number.isFinite(route.scrollY) ? route.scrollY : 0,
+    });
+    return;
+  }
+  await showMainView(mainView, { historyMode: "none" });
 }
+
+if ("scrollRestoration" in history) history.scrollRestoration = "manual";
 
 window.addEventListener("popstate", async (event) => {
   if (!event.state?.fleuretmoi) return;

@@ -341,10 +341,27 @@ h2 {
 .observationPhotoCard { position: relative; flex: 0 0 auto; }
 .observationPhotoOpen { display: block; border: 0; padding: 0; border-radius: 13px; background: transparent; overflow: hidden; cursor: zoom-in; }
 .observationPhotoOpen:focus-visible { outline: 3px solid rgba(56,107,76,.24); outline-offset: 3px; }
-.observationPhotoCard img { width: auto; height: 400px; max-width: min(72vw, 260px); border-radius: 13px; object-fit: contain; background: var(--soft); display: block; transition: transform .15s ease; }
+.observationPhotoCard img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: min(80vw, 360px);
+  max-height: 180px;
+  border-radius: 13px;
+  object-fit: initial;
+  background: transparent;
+  transition: transform .15s ease;
+}
 .observationPhotoOpen:hover img { transform: scale(1.015); }
 .openObservationButton { border: 0; background: transparent; color: var(--green); font-weight: 700; font-size: .78rem; }
 .observationNote { margin: 10px 0 0; padding: 10px 12px; border-radius: 11px; background: var(--soft-2); color: var(--muted); font-size: .82rem; line-height: 1.45; white-space: pre-wrap; }
+
+/* Transitions between detail views: keep the previous rendered view visible
+   until the destination and its local images are ready. */
+::view-transition-old(root) { animation: fleuretmoiViewOut 120ms ease both; }
+::view-transition-new(root) { animation: fleuretmoiViewIn 170ms ease both; }
+@keyframes fleuretmoiViewOut { to { opacity: .86; } }
+@keyframes fleuretmoiViewIn { from { opacity: .72; } to { opacity: 1; } }
 
 /* Interactive mobile edge navigation: destination follows the finger. */
 .appView { will-change: transform; }
@@ -558,7 +575,10 @@ html.edgeSwiping body {
 .speciesIllustrationMedia {
   width: 100%; min-height: 210px; aspect-ratio: 4 / 5; border-radius: 18px;
   overflow: hidden; background: linear-gradient(145deg,#f7f3ea,#edf3eb); display: block;
-  border: 1px solid #d9e1d9;
+  border: 0;
+}
+.speciesIllustrationMedia.hasIllustration {
+  box-shadow: 0 3px 12px rgba(24, 44, 32, .11);
 }
 .speciesIllustrationMedia > img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .speciesIllustrationPlaceholderInner {

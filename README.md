@@ -16,6 +16,6 @@ Le shell de l’application et les données déjà enregistrées restent disponi
 La carte utilise les tuiles OpenStreetMap et l’identification Pl@ntNet nécessite une connexion réseau.
 
 
-## Illustrations Wikimedia
+## Laboratoire illustrations Wikimedia
 
-Je hais wikipedia mais wikimedia est pratique et fournit à l'utilisateur des choix d'illustrations de planches botaniques vintage pour compléter l'herbier. 
+Une page expérimentale `illustration-test.html` permet de tester le futur classement des illustrations botaniques sans modifier l’Herbier. Elle interroge Wikimedia Commons en lecture seule, analyse localement des miniatures et affiche les scores A/C/D/E/F ainsi que le bonus portrait. Les catégories multi-espèces et le recadrage ne sont utilisés qu’en secours.
