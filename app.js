@@ -685,6 +685,78 @@ async function diagnosePlantNetFetchFailure(cause) {
   };
 }
 
+
+const wikidataCommonNameCache = new Map();
+
+function hasUsefulCommonName(candidate) {
+  const scientific = normalizeScientificKey(candidate?.scientificNameWithoutAuthor || candidate?.scientificName || "");
+  return Array.isArray(candidate?.commonNames) && candidate.commonNames.some((name) => {
+    const value = String(name || "").trim();
+    return value && normalizeScientificKey(value) !== scientific;
+  });
+}
+
+async function fetchFrenchCommonNameFromWikidata(scientificName) {
+  const query = String(scientificName || "").trim();
+  if (!query || query === "Inconnue") return "";
+  const key = normalizeScientificKey(query);
+  if (wikidataCommonNameCache.has(key)) return wikidataCommonNameCache.get(key);
+
+  try {
+    // wbsearchentities is enough here: searching the exact scientific binomial
+    // resolves the taxon item, while language=fr asks Wikidata for its French label.
+    const params = new URLSearchParams({
+      action: "wbsearchentities",
+      search: query,
+      language: "fr",
+      uselang: "fr",
+      type: "item",
+      limit: "5",
+      format: "json",
+      origin: "*",
+    });
+    const response = await fetch(`https://www.wikidata.org/w/api.php?${params}`);
+    if (!response.ok) throw new Error(`Wikidata HTTP ${response.status}`);
+    const payload = await response.json();
+    const normalizedScientific = normalizeScientificKey(query);
+
+    // Prefer a result whose aliases/match text actually contains the scientific name.
+    const results = Array.isArray(payload?.search) ? payload.search : [];
+    const result = results.find((entry) => {
+      const haystack = [
+        entry?.label,
+        entry?.match?.text,
+        ...(Array.isArray(entry?.aliases) ? entry.aliases : []),
+      ].filter(Boolean).map(normalizeScientificKey);
+      return haystack.includes(normalizedScientific);
+    }) || results[0];
+
+    let label = String(result?.label || "").trim();
+    // A French Wikidata label identical to the Latin binomial is not a vernacular name.
+    if (!label || normalizeScientificKey(label) === normalizedScientific) label = "";
+
+    wikidataCommonNameCache.set(key, label);
+    return label;
+  } catch (error) {
+    console.warn("Fallback Wikidata pour le nom français indisponible", query, error);
+    // Identification must never fail merely because this optional enrichment failed.
+    wikidataCommonNameCache.set(key, "");
+    return "";
+  }
+}
+
+async function enrichMissingFrenchCommonNames(result) {
+  if (!Array.isArray(result?.results)) return result;
+  // Enrich all five Pl@ntNet proposals so alternatives also display a French name.
+  await Promise.all(result.results.map(async (candidate) => {
+    if (hasUsefulCommonName(candidate)) return;
+    const scientificName = candidate.scientificNameWithoutAuthor || candidate.scientificName;
+    const commonName = await fetchFrenchCommonNameFromWikidata(scientificName);
+    if (commonName) candidate.commonNames = [commonName, ...(candidate.commonNames || [])];
+  }));
+  return result;
+}
+
 async function sendIdentification(photos) {
   const apiKey = getApiKey();
   if (!apiKey) {
@@ -726,7 +798,8 @@ async function sendIdentification(photos) {
     error.queueScope = new Set([400, 413, 415, 422]).has(response.status) ? "item" : "global";
     throw error;
   }
-  return normalizePlantNet(payload);
+  const normalized = normalizePlantNet(payload);
+  return enrichMissingFrenchCommonNames(normalized);
 }
 
 function toStoredPhotos(photos) {
@@ -901,6 +974,13 @@ async function getOrCreateSpeciesForCandidate(candidate, observation) {
     if (normalized.family) species.family = normalized.family;
     if (normalized.genus) species.genus = normalized.genus;
     await dbPut(STORE_SPECIES, species);
+  } else if (hasUsefulCommonName(normalized)) {
+    const currentIsScientific = !species.commonName ||
+      normalizeScientificKey(species.commonName) === normalizeScientificKey(species.scientificNameWithoutAuthor || species.scientificName);
+    if (currentIsScientific) {
+      species.commonName = normalized.commonNames[0];
+      await dbPut(STORE_SPECIES, species);
+    }
   }
   return { species, isNew };
 }
@@ -1940,6 +2020,25 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeHerbariumSortMenu();
 });
 
+
+async function enrichStoredSpeciesFrenchCommonName(species) {
+  if (!species?.id) return;
+  const scientific = species.scientificNameWithoutAuthor || species.scientificName;
+  const current = String(species.commonName || "").trim();
+  if (current && normalizeScientificKey(current) !== normalizeScientificKey(scientific)) return;
+
+  const commonName = await fetchFrenchCommonNameFromWikidata(scientific);
+  if (!commonName) return;
+
+  species.commonName = commonName;
+  await dbPut(STORE_SPECIES, species);
+  // Do not rerender the whole Herbarium/species page: update only visible labels.
+  if (state.currentSpeciesId === species.id) {
+    const label = $("#speciesCommonName");
+    if (label) label.textContent = commonName;
+  }
+}
+
 async function openSpecies(id, { historyMode = "push" } = {}) {
   const species = await dbGet(STORE_SPECIES, id);
   if (!species) {
@@ -1968,6 +2067,9 @@ async function openSpecies(id, { historyMode = "push" } = {}) {
   await decodeImagesIn(views.species);
   await switchToView(views.species, { hideNavigation: true, scrollY: 0 });
   recordRoute({ type: "species", id }, historyMode);
+  // Optional network enrichment happens after the transition so opening a
+  // species remains immediate even if Wikidata is slow or unavailable.
+  enrichStoredSpeciesFrenchCommonName(species);
   return true;
 }
 
