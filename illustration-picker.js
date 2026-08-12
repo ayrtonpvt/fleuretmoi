@@ -21,6 +21,11 @@
     progressBar: document.getElementById("illustrationPickerProgressBar"),
     grid: document.getElementById("illustrationPickerGrid"),
     more: document.getElementById("illustrationPickerMore"),
+    fallbackActions: document.getElementById("illustrationFallbackActions"),
+    fallbackLabel: document.getElementById("illustrationFallbackLabel"),
+    importButton: document.getElementById("illustrationImportButton"),
+    importInput: document.getElementById("illustrationImportInput"),
+    googleButton: document.getElementById("illustrationGoogleButton"),
     cancel: document.getElementById("illustrationPickerCancel"),
   };
 
@@ -44,6 +49,7 @@
     // ne doit jamais rouvrir l’éditeur après que l’utilisateur a quitté la fenêtre.
     pickerState.token += 1;
     pickerState.choosing = false;
+    if (picker.importInput) picker.importInput.value = "";
     if (picker.dialog?.open) picker.dialog.close();
   }
 
@@ -63,6 +69,65 @@
     pickerState.visible = nextVisible;
     renderPickerGrid();
   });
+
+  picker.importButton?.addEventListener("click", () => {
+    if (!pickerState.species || pickerState.choosing) return;
+    picker.importInput.value = "";
+    picker.importInput.click();
+  });
+
+  picker.importInput?.addEventListener("change", async () => {
+    const file = picker.importInput.files?.[0];
+    if (!file || !pickerState.species || pickerState.choosing) return;
+    const species = pickerState.species;
+    const token = pickerState.token;
+
+    if (file.type && !file.type.startsWith("image/")) {
+      setPickerStatus("Le fichier choisi n’est pas une image.", true);
+      return;
+    }
+
+    pickerState.choosing = true;
+    updatePickerFallbackActions();
+    renderPickerGrid();
+    setPickerStatus("Préparation de l’image importée…");
+
+    try {
+      await loadImageFromBlob(file);
+      if (token !== pickerState.token) return;
+
+      pickerState.choosing = false;
+      if (picker.dialog?.open) picker.dialog.close();
+      await openIllustrationEditor({
+        mode: "new",
+        species,
+        sourceBlob: file,
+        metadata: {
+          source: "manual",
+          fileName: file.name || "illustration",
+          mimeType: file.type || "",
+          fileSize: file.size || 0,
+          selectedAt: Date.now(),
+        },
+      });
+    } catch (error) {
+      if (token !== pickerState.token) return;
+      console.error("Import manuel de l’illustration impossible", error);
+      pickerState.choosing = false;
+      setPickerStatus("Cette image ne peut pas être ouverte par ce navigateur. Essaie un JPG, PNG ou WebP.", true);
+      renderPickerGrid();
+      updatePickerFallbackActions();
+    }
+  });
+
+  picker.googleButton?.addEventListener("click", () => {
+    const scientificName = (pickerState.species?.scientificNameWithoutAuthor || pickerState.species?.scientificName || "").trim();
+    if (!scientificName) return;
+    const query = `${scientificName} botanical illustration`;
+    const url = `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(query)}`;
+    window.open(url, "_blank", "noopener,noreferrer");
+  });
+
   editor.cancel?.addEventListener("click", closeIllustrationEditor);
   editor.dialog?.addEventListener("pointerdown", (event) => {
     if (event.target === editor.dialog) closeIllustrationEditor();
@@ -172,6 +237,8 @@
     picker.grid.innerHTML = "";
     picker.more.hidden = true;
     picker.more.disabled = false;
+    if (picker.fallbackActions) picker.fallbackActions.hidden = true;
+    if (picker.fallbackActions) picker.fallbackActions.classList.remove("isPrimary");
     setPickerProgress(0, false);
     setPickerStatus("Recherche des illustrations botaniques exactes…");
     picker.dialog.showModal();
@@ -183,6 +250,7 @@
       if (cached) {
         pickerState.ranked = cached;
         renderPickerGrid();
+        updatePickerFallbackActions();
         setPickerStatus(`${cached.length} propositions classées. Les images multi-espèces restent en dernier recours.`);
         return;
       }
@@ -191,7 +259,12 @@
       if (token !== pickerState.token) return;
       const meta = discovery.items;
       if (!meta.length) {
-        throw new Error(`Aucune illustration botanique fiable de « ${scientificName} » n’a été trouvée sur Wikimedia Commons.`);
+        pickerState.ranked = [];
+        renderPickerGrid();
+        setPickerProgress(0, false);
+        updatePickerFallbackActions({ primary: true });
+        setPickerStatus(`Aucune illustration botanique fiable de « ${scientificName} » n’a été trouvée sur Wikimedia Commons. Tu peux importer une image ou chercher une planche sur Google Images.`);
+        return;
       }
 
       const candidates = meta.filter((item) => item.thumbUrl).map((item) => ({
@@ -224,6 +297,7 @@
       analysisCache.set(scientificName, ranked);
       pickerState.ranked = ranked;
       renderPickerGrid();
+      updatePickerFallbackActions();
       setPickerProgress(100, false);
       const fallbackNote = discovery.usedFallback
         ? ` ${discovery.fallbackAccepted} illustration${discovery.fallbackAccepted > 1 ? "s" : ""} repérée${discovery.fallbackAccepted > 1 ? "s" : ""} dans la catégorie générale de l’espèce.`
@@ -232,8 +306,22 @@
     } catch (error) {
       console.error(error);
       setPickerProgress(0, false);
+      updatePickerFallbackActions({ primary: !pickerState.ranked.length });
       setPickerStatus(error?.message || String(error), true);
     }
+  }
+
+  function updatePickerFallbackActions({ primary = false } = {}) {
+    if (!picker.fallbackActions) return;
+    picker.fallbackActions.hidden = false;
+    picker.fallbackActions.classList.toggle("isPrimary", Boolean(primary));
+    if (picker.fallbackLabel) {
+      picker.fallbackLabel.textContent = primary
+        ? "Aucune proposition Wikimedia satisfaisante ?"
+        : "Tu préfères une autre illustration ?";
+    }
+    if (picker.importButton) picker.importButton.disabled = Boolean(pickerState.choosing);
+    if (picker.googleButton) picker.googleButton.disabled = Boolean(pickerState.choosing);
   }
 
   function renderPickerGrid() {
@@ -259,6 +347,7 @@
       picker.grid.appendChild(button);
     });
     picker.more.hidden = visibleCount >= pickerState.ranked.length;
+    if (!picker.fallbackActions?.hidden) updatePickerFallbackActions({ primary: !pickerState.ranked.length });
   }
 
   async function chooseCandidate(candidate) {

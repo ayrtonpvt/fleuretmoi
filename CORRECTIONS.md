@@ -73,3 +73,10 @@
 - Les modales principales peuvent être fermées en cliquant sur leur arrière-plan.
 - La fiche d’identité de l’espèce reprend la couleur de fond dominante de l’illustration, calculée sur ses bords, avec adaptation du contraste du texte.
 - Le sélecteur natif de tri de l’Herbier a été remplacé par un bouton/menu CSS dédié.
+
+
+## v25 — fallback manuel des illustrations
+- Le sélecteur Wikimedia propose désormais **Importer une image** et **Rechercher sur Google Images**.
+- Si Wikimedia ne trouve aucune illustration fiable, ces actions deviennent le fallback principal.
+- Une image importée passe par le même éditeur de cadrage/zoom et est enregistrée localement avec `source: "manual"`.
+- La recherche Google Images utilise le nom scientifique exact suivi de `botanical illustration` et n'effectue aucun téléchargement automatique.

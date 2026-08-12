@@ -623,6 +623,15 @@ html.edgeSwiping body {
 .illustrationCandidateMeta strong { font-size: .78rem; line-height: 1.35; overflow-wrap: anywhere; }
 .illustrationCandidateMeta small { color: var(--muted); font-size: .7rem; line-height: 1.35; }
 .illustrationMoreButton { display: block; margin: 18px auto 0; }
+.illustrationFallbackActions {
+  margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); text-align: center;
+}
+.illustrationFallbackActions.isPrimary {
+  padding: 18px; border: 1px dashed #b9c8bc; border-radius: 16px; background: rgba(255,255,255,.42);
+}
+.illustrationFallbackActions p { margin: 0 0 10px; }
+.illustrationFallbackButtons { display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; }
+.illustrationFallbackButtons .secondaryButton { margin-top: 0; }
 
 .illustrationEditorDialog { width: min(620px, calc(100vw - 20px)); }
 .illustrationEditorCanvasWrap { width: min(100%, 430px); margin: 16px auto; background: #e7ebe6; border-radius: 16px; overflow: hidden; box-shadow: inset 0 0 0 1px rgba(35, 68, 48, .1); }
@@ -648,6 +657,8 @@ html.edgeSwiping body {
   .illustrationPickerPanel { padding: 15px; max-height: 96dvh; }
   .illustrationPickerGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .illustrationCandidateMeta strong { font-size: .74rem; }
+  .illustrationFallbackButtons { display: grid; grid-template-columns: 1fr; }
+  .illustrationFallbackButtons .secondaryButton { width: 100%; }
   .illustrationEditorPanel { padding: 15px; }
   .illustrationEditorActions { flex-wrap: wrap; }
   .illustrationChangeButton { flex-basis: calc(100% - 62px); }

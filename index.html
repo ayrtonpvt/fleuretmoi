@@ -371,6 +371,14 @@
       <div id="illustrationPickerProgress" class="illustrationProgress" hidden><div id="illustrationPickerProgressBar"></div></div>
       <div id="illustrationPickerGrid" class="illustrationPickerGrid"></div>
       <button id="illustrationPickerMore" class="secondaryButton illustrationMoreButton" type="button" hidden>Afficher 6 autres</button>
+      <div id="illustrationFallbackActions" class="illustrationFallbackActions" hidden>
+        <p id="illustrationFallbackLabel" class="muted">Autres options</p>
+        <div class="illustrationFallbackButtons">
+          <button id="illustrationImportButton" class="secondaryButton" type="button">Importer une image</button>
+          <button id="illustrationGoogleButton" class="secondaryButton" type="button">Rechercher sur Google Images</button>
+        </div>
+        <input id="illustrationImportInput" type="file" accept="image/*" hidden>
+      </div>
     </div>
   </dialog>
 
@@ -442,7 +450,7 @@
 
   <script src="https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/full.umd.js" defer></script>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="" defer></script>
-  <script src="./app.js?v=24" defer></script>
-  <script src="./illustration-picker.js?v=24" defer></script>
+  <script src="./app.js?v=25" defer></script>
+  <script src="./illustration-picker.js?v=25" defer></script>
 </body>
 </html>
