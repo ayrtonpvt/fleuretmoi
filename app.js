@@ -601,11 +601,96 @@ function normalizePlantNet(payload) {
   };
 }
 
+function plantNetPayloadDetail(payload) {
+  const detail = payload?.message || payload?.error || payload?.detail;
+  if (!detail) return "";
+  if (typeof detail === "string") return detail.trim();
+  try { return JSON.stringify(detail); } catch { return ""; }
+}
+
+function plantNetHttpErrorMessage(status, payload) {
+  const detail = plantNetPayloadDetail(payload);
+  const suffix = detail ? ` — ${detail}` : "";
+  switch (status) {
+    case 400:
+      return `Requête refusée par Pl@ntNet. Une photo ou un paramètre envoyé est probablement invalide.${suffix}`;
+    case 401:
+      return `Clé API Pl@ntNet invalide ou non reconnue.${suffix}`;
+    case 403:
+      return `Accès refusé par Pl@ntNet. Vérifiez les autorisations de la clé API et que ${location.origin} est autorisé.${suffix}`;
+    case 408:
+      return `Pl@ntNet a mis trop de temps à traiter la requête.${suffix}`;
+    case 413:
+      return `Photo(s) trop volumineuse(s) pour Pl@ntNet.${suffix}`;
+    case 415:
+      return `Format d’image non pris en charge par Pl@ntNet.${suffix}`;
+    case 422:
+      return `Pl@ntNet n’a pas pu exploiter le contenu envoyé (image invalide ou paramètres incompatibles).${suffix}`;
+    case 429:
+      return `Quota ou limite de requêtes Pl@ntNet atteint(e). Réessayez plus tard.${suffix}`;
+    default:
+      if (status >= 500) return `Service Pl@ntNet temporairement indisponible (HTTP ${status}). Réessayez plus tard.${suffix}`;
+      return `Pl@ntNet a renvoyé l’erreur HTTP ${status}.${suffix}`;
+  }
+}
+
+async function probePlantNetReachability() {
+  // Un fetch no-cors peut confirmer que l'hôte est joignable sans exiger les
+  // en-têtes CORS de l'API. Il ne permet pas de lire la réponse, ce qui suffit
+  // ici pour distinguer "hôte joignable mais POST bloqué" d'une panne réseau.
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    const origin = new URL(PLANTNET_API_URL).origin;
+    await fetch(origin, {
+      method: "GET",
+      mode: "no-cors",
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function diagnosePlantNetFetchFailure(cause) {
+  if (!navigator.onLine) {
+    return {
+      code: "PLANTNET_OFFLINE",
+      message: "Vous êtes hors ligne. L’observation peut être conservée dans la file d’attente.",
+    };
+  }
+
+  if (cause?.name === "SecurityError") {
+    return {
+      code: "PLANTNET_BROWSER_BLOCK",
+      message: "Le navigateur a bloqué la requête Pl@ntNet pour une raison de sécurité. Vérifiez les autorisations du site, le HTTPS et les éventuels bloqueurs de contenu.",
+    };
+  }
+
+  const hostReachable = await probePlantNetReachability();
+  if (hostReachable) {
+    return {
+      code: "PLANTNET_CORS",
+      message: `Pl@ntNet est joignable, mais le navigateur bloque la requête d’identification. Cause probable : CORS/origine non autorisée. Vérifiez que ${location.origin} est autorisé pour votre clé Pl@ntNet.`,
+    };
+  }
+
+  return {
+    code: "PLANTNET_NETWORK",
+    message: "Impossible de joindre les serveurs Pl@ntNet. Vérifiez la connexion, le DNS, le VPN/pare-feu ou un éventuel bloqueur réseau, puis réessayez.",
+  };
+}
+
 async function sendIdentification(photos) {
   const apiKey = getApiKey();
   if (!apiKey) {
     const error = new Error("Aucune clé API n’est enregistrée.");
     error.queueScope = "global";
+    error.code = "PLANTNET_NO_API_KEY";
     throw error;
   }
 
@@ -620,23 +705,21 @@ async function sendIdentification(photos) {
   try {
     response = await fetch(`${PLANTNET_API_URL}?${params}`, { method: "POST", body: buildFormData(photos) });
   } catch (cause) {
-    const corsHint = navigator.onLine
-      ? `Le navigateur n’a pas pu joindre Pl@ntNet. Vérifiez que ${location.origin} est autorisé dans les réglages client/CORS de votre clé.`
-      : "Vous êtes hors ligne.";
-    const error = new Error(corsHint, { cause });
-    // Une panne réseau/CORS touche potentiellement toute la file : inutile de
-    // marteler l’API avec les observations suivantes lors du traitement global.
+    const diagnosis = await diagnosePlantNetFetchFailure(cause);
+    const error = new Error(diagnosis.message, { cause });
+    // Toutes ces causes touchent potentiellement toute la file, contrairement
+    // à un format de photo invalide qui ne concerne qu'une observation.
     error.queueScope = "global";
-    error.code = "PLANTNET_NETWORK";
+    error.code = diagnosis.code;
     throw error;
   }
 
   let payload;
   try { payload = await response.json(); } catch { payload = {}; }
   if (!response.ok) {
-    const detail = payload.message || payload.error || payload.detail || `Pl@ntNet a renvoyé l’erreur HTTP ${response.status}.`;
-    const error = new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+    const error = new Error(plantNetHttpErrorMessage(response.status, payload));
     error.httpStatus = response.status;
+    error.code = `PLANTNET_HTTP_${response.status}`;
     // 400/413/415/422 sont typiquement liés au contenu envoyé (format, poids,
     // image invalide). Les erreurs d’authentification, quota et serveur sont
     // globales et doivent interrompre le balayage automatique de la file.
