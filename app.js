@@ -500,26 +500,49 @@ function getCurrentLocation(showErrors = true) {
   });
 }
 
+async function makeStablePhotoFile(file) {
+  // Android camera/file pickers may expose a File backed by a temporary
+  // content URI. Reusing the <input> for a second capture can invalidate that
+  // backing blob before IndexedDB has persisted it. Reading the bytes now and
+  // rebuilding a File gives Fleuretmoi an independent, durable Blob.
+  const bytes = await file.arrayBuffer();
+  return new File([bytes], file.name || `fleuretmoi-${Date.now()}.jpg`, {
+    type: file.type || "image/jpeg",
+    lastModified: Number(file.lastModified) || Date.now(),
+  });
+}
+
 async function addSelectedPhotos(input, source) {
   const selectedFiles = [...input.files];
   const room = MAX_PHOTOS - state.photos.length;
   const incoming = selectedFiles.slice(0, room);
-  input.value = "";
 
-  if (!incoming.length) return;
+  if (!incoming.length) {
+    input.value = "";
+    return;
+  }
   statusText.textContent = source === "gallery" ? "Lecture des métadonnées des photos…" : "Préparation de la photo…";
 
-  for (const file of incoming) {
-    const metadata = await extractPhotoMetadata(file, source);
-    state.photos.push({
-      file,
-      organ: "auto",
-      preview: URL.createObjectURL(file),
-      source,
-      capturedAt: metadata.capturedAt,
-      dateSource: metadata.dateSource,
-      location: metadata.location,
-    });
+  try {
+    // Stabilise every selected file before clearing/reusing the picker.
+    for (const originalFile of incoming) {
+      const file = await makeStablePhotoFile(originalFile);
+      const metadata = await extractPhotoMetadata(file, source);
+      state.photos.push({
+        file,
+        organ: "auto",
+        preview: URL.createObjectURL(file),
+        source,
+        capturedAt: metadata.capturedAt,
+        dateSource: metadata.dateSource,
+        location: metadata.location,
+      });
+    }
+  } catch (error) {
+    console.error("Impossible de stabiliser la photo sélectionnée", error);
+    statusText.textContent = "Impossible de lire complètement cette photo. Réessayez ou choisissez-la depuis la galerie.";
+  } finally {
+    input.value = "";
   }
 
   if (incoming.length < selectedFiles.length || room === 0) {
