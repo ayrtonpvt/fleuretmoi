@@ -45,42 +45,67 @@
   let editorState = null;
   let editorPointer = null;
 
-  function inferredImageMime(file) {
-    const declared = String(file?.type || "").toLowerCase();
-    if (["image/jpeg", "image/png", "image/webp", "image/gif"].includes(declared)) return declared;
-    const name = String(file?.name || "").toLowerCase();
-    if (/\.jpe?g$/.test(name)) return "image/jpeg";
-    if (/\.png$/.test(name)) return "image/png";
-    if (/\.webp$/.test(name)) return "image/webp";
-    if (/\.gif$/.test(name)) return "image/gif";
-    return declared.startsWith("image/") ? declared : "";
-  }
-
-  async function sniffImageMime(blob) {
-    try {
-      const bytes = new Uint8Array(await blob.slice(0, 16).arrayBuffer());
-      if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
-      if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return "image/png";
-      if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38) return "image/gif";
-      if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
-          bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return "image/webp";
-    } catch {}
+  function imageMimeFromName(name) {
+    const value = String(name || "").toLowerCase();
+    if (/\.jpe?g$/.test(value)) return "image/jpeg";
+    if (/\.png$/.test(value)) return "image/png";
+    if (/\.webp$/.test(value)) return "image/webp";
+    if (/\.gif$/.test(value)) return "image/gif";
+    if (/\.avif$/.test(value)) return "image/avif";
     return "";
   }
 
-  async function normalizeImportedImageFile(file) {
-    if (!file?.size) throw new Error("Le fichier choisi est vide.");
-    let mime = inferredImageMime(file) || await sniffImageMime(file);
-    if (!mime) mime = await sniffImageMime(file);
-    if (!mime) throw new Error("Format d’image non reconnu. Utilise un JPG, PNG ou WebP.");
-    if (!["image/jpeg", "image/png", "image/webp", "image/gif"].includes(mime)) {
-      throw new Error("Ce format d’image n’est pas pris en charge. Utilise un JPG, PNG ou WebP.");
+  function sniffImageMimeFromBytes(bytes) {
+    if (!bytes || bytes.length < 12) return "";
+    if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+    if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return "image/png";
+    if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38) return "image/gif";
+    if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
+        bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return "image/webp";
+    // AVIF/HEIF are ISO-BMFF files. We do not reject them here: if the current
+    // browser can decode the selected variant, the import may still succeed.
+    const brand = String.fromCharCode(...bytes.slice(4, 12));
+    if (brand.includes("ftyp") && ["avif", "avis"].includes(String.fromCharCode(...bytes.slice(8, 12)))) return "image/avif";
+    return "";
+  }
+
+  function readFileAsArrayBuffer(file) {
+    if (typeof file?.arrayBuffer === "function") {
+      return file.arrayBuffer().catch(() => new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(reader.error || new Error("Lecture du fichier impossible."));
+        reader.onload = () => resolve(reader.result);
+        reader.readAsArrayBuffer(file);
+      }));
     }
-    // Certains sélecteurs de fichiers Android renvoient un JPEG avec un type vide
-    // ou application/octet-stream. Recréer un Blob avec le bon MIME suffit à le
-    // rendre décodable sans modifier les octets du fichier.
-    if (file.type !== mime) return new File([file], file.name || "illustration", { type: mime, lastModified: file.lastModified || Date.now() });
-    return file;
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(reader.error || new Error("Lecture du fichier impossible."));
+      reader.onload = () => resolve(reader.result);
+      reader.readAsArrayBuffer(file);
+    });
+  }
+
+  async function normalizeImportedImageFile(file) {
+    if (!file || Number(file.size || 0) <= 0) throw new Error("Le fichier choisi est vide.");
+
+    // Force a real byte copy immediately. On some Android file providers the
+    // File object is only a temporary view over a content:// URI; retaining the
+    // original File can make a perfectly valid JPEG unreadable a moment later.
+    const buffer = await readFileAsArrayBuffer(file);
+    const bytes = new Uint8Array(buffer);
+    const signatureMime = sniffImageMimeFromBytes(bytes.subarray(0, 32));
+    const declaredMime = String(file.type || "").toLowerCase();
+    const namedMime = imageMimeFromName(file.name);
+    const mime = signatureMime || (declaredMime.startsWith("image/") ? declaredMime : "") || namedMime || "application/octet-stream";
+    const safeName = file.name || `illustration.${mime === "image/jpeg" ? "jpg" : mime.split("/")[1] || "img"}`;
+
+    // Use bytes, not `new File([file])`: the latter may preserve the same
+    // temporary Android Blob backing store instead of stabilising it.
+    return new File([buffer], safeName, {
+      type: mime,
+      lastModified: Number(file.lastModified || Date.now()),
+    });
   }
 
   function decodeImageViaObjectUrl(blob) {
@@ -107,14 +132,32 @@
     });
   }
 
+  async function decodeImageViaBitmap(blob) {
+    if (typeof createImageBitmap !== "function") throw new Error("createImageBitmap indisponible");
+    const bitmap = await createImageBitmap(blob);
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(bitmap, 0, 0);
+      const stableBlob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+      if (!stableBlob) throw new Error("Conversion de l’image impossible.");
+      return await decodeImageViaObjectUrl(stableBlob);
+    } finally {
+      bitmap.close?.();
+    }
+  }
+
   async function loadIllustrationImage(blob) {
     try {
       return await decodeImageViaObjectUrl(blob);
     } catch (firstError) {
-      // Fallback utile sur certains WebView/launchers Android qui échouent sur
-      // une URL blob issue du sélecteur de fichiers alors que le JPEG est valide.
       try { return await decodeImageViaDataUrl(blob); }
-      catch { throw firstError; }
+      catch {
+        try { return await decodeImageViaBitmap(blob); }
+        catch { throw firstError; }
+      }
     }
   }
 
