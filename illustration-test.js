@@ -434,12 +434,23 @@
       .filter((taxon) => binomialKey(taxon) !== targetBinomial));
   }
 
+  function taxonCoreParts(taxon) {
+    return String(taxon || "")
+      .normalize("NFKC")
+      .replace(/[✕✖]/g, "×")
+      .replace(/\s*[×]\s*/g, " × ")
+      .replace(/\s+\b[xX]\b\s+/g, " × ")
+      .trim()
+      .split(/\s+/)
+      .filter((part) => part && part !== "×" && part.toLowerCase() !== "x");
+  }
+
   function binomialKey(taxon) {
-    return String(taxon || "").trim().split(/\s+/).slice(0, 2).join(" ").toLocaleLowerCase("en");
+    return taxonCoreParts(taxon).slice(0, 2).join(" ").toLocaleLowerCase("en");
   }
 
   function isLikelySpeciesTaxon(taxon) {
-    const parts = String(taxon || "").trim().split(/\s+/);
+    const parts = taxonCoreParts(taxon);
     if (parts.length < 2) return false;
     const [genus, epithet] = parts;
     if (!/^[A-Z][A-Za-zÀ-ÖØ-öø-ÿ.-]+$/.test(genus)) return false;

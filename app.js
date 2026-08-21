@@ -272,6 +272,9 @@ function normalizeScientificKey(name = "") {
   return String(name)
     .trim()
     .toLocaleLowerCase("fr")
+    // Treat typographic and ASCII hybrid markers as the same taxon key.
+    .replace(/\s*×\s*/g, " x ")
+    .replace(/\s+\bx\b\s+/g, " x ")
     .replace(/\s+/g, " ");
 }
 
@@ -315,9 +318,20 @@ function getResultFromObservation(item) {
   return getResultFromLegacy(item);
 }
 
+function canonicalizeHybridScientificName(name = "") {
+  const value = String(name || "").trim().replace(/\s+/g, " ");
+  if (!value) return value;
+  // Botanical hybrid notation is canonically written with the multiplication
+  // sign. Pl@ntNet/other datasets sometimes serialize it as a plain "x".
+  return value.replace(
+    /^([A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ.-]+)\s+(?:×\s*|[xX]\s+)([a-zà-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ.-]*)/,
+    "$1 × $2"
+  );
+}
+
 function normalizeCandidate(candidate = {}) {
-  const scientificName = String(candidate.scientificName || candidate.scientificNameWithoutAuthor || "Inconnue").trim() || "Inconnue";
-  const scientificNameWithoutAuthor = String(candidate.scientificNameWithoutAuthor || scientificName).trim() || scientificName;
+  const scientificName = canonicalizeHybridScientificName(candidate.scientificName || candidate.scientificNameWithoutAuthor || "Inconnue") || "Inconnue";
+  const scientificNameWithoutAuthor = canonicalizeHybridScientificName(candidate.scientificNameWithoutAuthor || scientificName) || scientificName;
   const commonNames = Array.isArray(candidate.commonNames)
     ? candidate.commonNames.filter(Boolean).map((name) => String(name))
     : candidate.commonName ? [String(candidate.commonName)] : [];
@@ -1033,6 +1047,16 @@ async function getOrCreateSpeciesForCandidate(candidate, observation) {
   const normalized = normalizeCandidate(candidate);
   const scientificKey = normalizeScientificKey(normalized.scientificNameWithoutAuthor || normalized.scientificName);
   let species = await dbGetByIndex(STORE_SPECIES, "scientificKey", scientificKey);
+  // Older records may have stored the Unicode × while newer API responses use
+  // ASCII x (or the reverse). If the indexed key misses, compare normalized
+  // scientific names before creating a duplicate species entry.
+  if (!species && /\b[x×]\b/i.test(normalized.scientificNameWithoutAuthor || normalized.scientificName)) {
+    const existingSpecies = await dbGetAll(STORE_SPECIES);
+    species = existingSpecies.find((entry) =>
+      normalizeScientificKey(entry.scientificNameWithoutAuthor || entry.scientificName || entry.scientificKey) === scientificKey
+      || normalizeScientificKey(entry.scientificKey || "") === scientificKey
+    ) || null;
+  }
   const isNew = !species;
 
   if (!species) {

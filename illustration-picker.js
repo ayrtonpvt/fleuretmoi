@@ -2,6 +2,7 @@
   "use strict";
 
   const COMMONS_API = "https://commons.wikimedia.org/w/api.php";
+  const WIKIDATA_API = "https://www.wikidata.org/w/api.php";
   const TARGET_COUNT = 6;
   const PAGE_STEP = 6;
   const ANALYSIS_MAX = 112;
@@ -342,7 +343,7 @@
 
       const candidates = meta.filter((item) => item.thumbUrl).map((item) => ({
         ...item,
-        otherSpecies: detectOtherIllustratedSpecies(item.categories, scientificName),
+        otherSpecies: detectOtherIllustratedSpecies(item.categories, scientificName, discovery.taxonVariants),
         analysis: null,
         cropAnalysis: null,
         cropScore: null,
@@ -705,6 +706,145 @@
     return dedupeCandidates(ordered);
   }
 
+
+  function normalizeHybridMarker(name) {
+    return String(name || "")
+      .normalize("NFKC")
+      .replace(/[✕✖]/g, "×")
+      .replace(/\s*[×]\s*/g, " × ")
+      .replace(/\s+\b[xX]\b\s+/g, " × ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function taxonIdentityKey(name) {
+    // For discovery only: hybrid marker spelling is orthographic noise.
+    // Rosa × odorata, Rosa x odorata and Rosa odorata must resolve together.
+    return normalizeHybridMarker(name)
+      .replace(/\s+×\s+/g, " ")
+      .toLocaleLowerCase("en")
+      .trim();
+  }
+
+  function taxonSearchVariants(name) {
+    const exact = String(name || "").trim().replace(/\s+/g, " ");
+    if (!exact) return [];
+    const canonical = normalizeHybridMarker(exact);
+    const variants = [exact, canonical];
+
+    if (/\s×\s/.test(canonical)) {
+      variants.push(
+        canonical.replace(/\s×\s/g, " x "),
+        canonical.replace(/\s×\s/g, " ×"),
+        canonical.replace(/\s×\s/g, " "),
+      );
+    }
+
+    return unique(variants.map((value) => value.trim()).filter(Boolean));
+  }
+
+  async function wikidataGet(params) {
+    const url = new URL(WIKIDATA_API);
+    const all = { format: "json", origin: "*", ...params };
+    Object.entries(all).forEach(([key, value]) => url.searchParams.set(key, value));
+    const response = await fetch(url.toString(), { mode: "cors", credentials: "omit" });
+    if (!response.ok) throw new Error(`Wikidata API : HTTP ${response.status}`);
+    const data = await response.json();
+    if (data.error) throw new Error(`Wikidata API : ${data.error.info || data.error.code}`);
+    return data;
+  }
+
+  function claimString(entity, property) {
+    const value = entity?.claims?.[property]?.[0]?.mainsnak?.datavalue?.value;
+    return typeof value === "string" ? value.trim() : "";
+  }
+
+  function claimEntityIds(entity, properties) {
+    return unique(properties.flatMap((property) =>
+      (entity?.claims?.[property] || [])
+        .map((claim) => claim?.mainsnak?.datavalue?.value?.id)
+        .filter(Boolean)
+    ));
+  }
+
+  async function resolveTaxonDiscoveryNames(scientificName) {
+    const equivalentNames = taxonSearchVariants(scientificName);
+    const synonymNames = [];
+    const targetKey = taxonIdentityKey(scientificName);
+    let commonsCategory = "";
+
+    try {
+      const search = await wikidataGet({
+        action: "wbsearchentities",
+        search: scientificName,
+        language: "en",
+        uselang: "en",
+        type: "item",
+        limit: "5",
+      });
+      const ids = (search?.search || []).map((entry) => entry.id).filter(Boolean);
+      if (ids.length) {
+        const entitiesData = await wikidataGet({
+          action: "wbgetentities",
+          ids: ids.join("|"),
+          props: "claims|labels|aliases",
+          languages: "en|fr|mul",
+        });
+        const entities = Object.values(entitiesData?.entities || {});
+        const scored = entities.map((entity) => {
+          const taxonName = claimString(entity, "P225");
+          const aliases = Object.values(entity.aliases || {}).flat().map((entry) => entry?.value).filter(Boolean);
+          const labels = Object.values(entity.labels || {}).map((entry) => entry?.value).filter(Boolean);
+          const names = [taxonName, ...aliases, ...labels].filter(Boolean);
+          const exactIdentity = names.some((name) => taxonIdentityKey(name) === targetKey);
+          return { entity, taxonName, aliases, labels, exactIdentity };
+        }).filter((entry) => entry.exactIdentity);
+
+        const chosen = scored[0];
+        if (chosen) {
+          if (chosen.taxonName) equivalentNames.push(...taxonSearchVariants(chosen.taxonName));
+          for (const alias of [...chosen.aliases, ...chosen.labels]) {
+            if (taxonIdentityKey(alias) === targetKey) equivalentNames.push(...taxonSearchVariants(alias));
+          }
+
+          commonsCategory = claimString(chosen.entity, "P373");
+          if (commonsCategory && taxonIdentityKey(commonsCategory) === targetKey) {
+            equivalentNames.push(...taxonSearchVariants(commonsCategory));
+          }
+
+          // Wikidata taxon synonym (P1420) and basionym (P566) are safe
+          // nomenclatural fallbacks: they denote this same taxon under another
+          // scientific name, unlike merely similar species of the genus.
+          const relatedIds = claimEntityIds(chosen.entity, ["P1420", "P566"]);
+          if (relatedIds.length) {
+            const relatedData = await wikidataGet({
+              action: "wbgetentities",
+              ids: relatedIds.join("|"),
+              props: "claims|labels|aliases",
+              languages: "en|fr|mul",
+            });
+            for (const related of Object.values(relatedData?.entities || {})) {
+              const relatedTaxon = claimString(related, "P225");
+              if (relatedTaxon) synonymNames.push(...taxonSearchVariants(relatedTaxon));
+            }
+          }
+        }
+      }
+    } catch (error) {
+      // Wikidata is only a discovery aid. Orthographic Commons variants still work.
+      console.warn("Résolution taxonomique Wikidata indisponible", scientificName, error);
+    }
+
+    return {
+      equivalentNames: unique(equivalentNames),
+      synonymNames: unique(synonymNames),
+      names: unique([...equivalentNames, ...synonymNames]),
+      commonsCategory,
+      identityKey: targetKey,
+    };
+  }
+
+
   async function categoryExists(categoryTitle) {
     const data = await commonsGet({ action: "query", prop: "categoryinfo", titles: categoryTitle });
     return Object.values(data?.query?.pages || {}).some((page) => !page.missing && page.categoryinfo);
@@ -723,43 +863,73 @@
     return files;
   }
 
+  async function searchCommonsFileTitlesByTaxonName(taxonName) {
+    const clean = String(taxonName || "").replace(/"/g, " ").trim();
+    if (!clean) return [];
+    const data = await commonsGet({
+      action: "query",
+      list: "search",
+      srsearch: `intitle:"${clean}"`,
+      srnamespace: "6",
+      srlimit: "50",
+    });
+    return (data?.query?.search || []).map((entry) => entry.title).filter(Boolean);
+  }
+
   async function discoverCommonsIllustrations(scientificName, token) {
-    const strictCategory = `Category:${scientificName} - botanical illustrations`;
-    const generalCategory = `Category:${scientificName}`;
+    const taxon = await resolveTaxonDiscoveryNames(scientificName);
+    if (token !== pickerState.token) return { items: [], usedFallback: false, fallbackAccepted: 0 };
+
+    const categoryBases = unique([
+      taxon.commonsCategory,
+      ...taxon.equivalentNames,
+      ...taxon.synonymNames,
+    ].filter(Boolean));
+
+    const strictCategories = unique(categoryBases.map((name) => `Category:${name} - botanical illustrations`));
+    const generalCategories = unique(categoryBases.map((name) => `Category:${name}`));
+
     const byTitle = new Map();
     let strictCount = 0;
     let usedFallback = false;
     let fallbackAccepted = 0;
 
-    setPickerStatus("Recherche de la catégorie d’illustrations botaniques exacte…");
-    const strictExists = await categoryExists(strictCategory);
-    if (token !== pickerState.token) return { items: [], usedFallback: false, fallbackAccepted: 0 };
+    setPickerStatus("Recherche des catégories d’illustrations botaniques du taxon…");
+    for (const strictCategory of strictCategories) {
+      if (token !== pickerState.token) return { items: [], usedFallback: false, fallbackAccepted: 0 };
+      if (!(await categoryExists(strictCategory))) continue;
 
-    if (strictExists) {
-      setPickerStatus("Récupération des illustrations botaniques exactes…");
+      setPickerStatus(`Récupération de ${strictCategory.replace(/^Category:/, "")}…`);
       const strictMembers = await fetchAllCategoryFiles(strictCategory);
       const strictMeta = await fetchFileMetadata(strictMembers.map((m) => m.title));
       for (const item of strictMeta) {
         item.discovery = "strict";
-        item.illustrationEvidence = "catégorie botanique exacte";
+        item.illustrationEvidence = "catégorie botanique exacte ou synonyme taxonomique";
         byTitle.set(normalizeTitle(item.title), item);
       }
-      strictCount = strictMeta.length;
+      strictCount = byTitle.size;
+      if (strictCount >= FALLBACK_MIN_STRICT) break;
     }
 
-    // Une catégorie très fournie suffit. Si elle n’existe pas ou contient peu
-    // d’images, on inspecte la catégorie générale de L’ESPÈCE — jamais celle
-    // d’une espèce voisine — et on applique un filtre très conservateur qui
-    // cherche des preuves d’illustration avant toute analyse esthétique.
-    if (!strictExists || strictCount < FALLBACK_MIN_STRICT) {
+    // If the strict illustration category is absent or sparse, inspect every
+    // Commons category that Wikidata/orthographic variants identify as this
+    // same taxon. This handles hybrids such as:
+    // Rosa × odorata / Rosa x odorata / Rosa odorata.
+    if (strictCount < FALLBACK_MIN_STRICT) {
       usedFallback = true;
-      setPickerStatus("Recherche complémentaire dans la catégorie exacte de l’espèce…");
-      const generalExists = await categoryExists(generalCategory);
-      if (generalExists) {
+      for (const generalCategory of generalCategories) {
+        if (token !== pickerState.token) return { items: [], usedFallback, fallbackAccepted };
+        if (!(await categoryExists(generalCategory))) continue;
+
+        setPickerStatus(`Recherche complémentaire dans ${generalCategory.replace(/^Category:/, "")}…`);
         const generalMembers = await fetchAllCategoryFiles(generalCategory);
-        if (token !== pickerState.token) return { items: [], usedFallback, fallbackAccepted: 0 };
-        setPickerStatus(`Filtrage des illustrations parmi ${generalMembers.length} fichiers de l’espèce…`);
-        const generalMeta = await fetchFileMetadata(generalMembers.map((m) => m.title));
+        const newTitles = generalMembers
+          .map((m) => m.title)
+          .filter((title) => !byTitle.has(normalizeTitle(title)));
+        if (!newTitles.length) continue;
+
+        setPickerStatus(`Filtrage des illustrations parmi ${newTitles.length} fichiers du même taxon…`);
+        const generalMeta = await fetchFileMetadata(newTitles);
         const filtered = await filterGeneralCategoryIllustrations(generalMeta, scientificName, token);
         for (const item of filtered) {
           const key = normalizeTitle(item.title);
@@ -769,9 +939,43 @@
           fallbackAccepted += 1;
         }
       }
+
+      // Historical botanical plates are often filed under an old scientific
+      // synonym rather than the modern species category. Search file TITLES
+      // only for Wikidata-verified taxon names, then run the same strict
+      // illustration-vs-photo filter. No neighbouring species are searched.
+      if (byTitle.size < FALLBACK_MIN_STRICT) {
+        const searchNames = unique([...taxon.equivalentNames, ...taxon.synonymNames]).slice(0, 10);
+        for (const searchName of searchNames) {
+          if (token !== pickerState.token) return { items: [], usedFallback, fallbackAccepted };
+          setPickerStatus(`Recherche des planches sous le nom « ${searchName} »…`);
+          const titles = await searchCommonsFileTitlesByTaxonName(searchName);
+          const newTitles = titles.filter((title) => !byTitle.has(normalizeTitle(title)));
+          if (!newTitles.length) continue;
+
+          const searchMeta = await fetchFileMetadata(newTitles);
+          const filtered = await filterGeneralCategoryIllustrations(searchMeta, scientificName, token);
+          for (const item of filtered) {
+            const key = normalizeTitle(item.title);
+            if (byTitle.has(key)) continue;
+            item.discovery = "verified-taxon-name-search";
+            item.illustrationEvidence = item.illustrationEvidence || `nom taxonomique vérifié : ${searchName}`;
+            byTitle.set(key, item);
+            fallbackAccepted += 1;
+          }
+        }
+      }
     }
 
-    return { items: [...byTitle.values()], usedFallback, fallbackAccepted, strictCount };
+    return {
+      items: [...byTitle.values()],
+      usedFallback,
+      fallbackAccepted,
+      strictCount,
+      taxonVariants: taxon.equivalentNames,
+      taxonSynonyms: taxon.synonymNames,
+      commonsCategory: taxon.commonsCategory,
+    };
   }
 
   async function fetchFileMetadata(titles) {
@@ -960,18 +1164,32 @@
     };
   }
 
-  function detectOtherIllustratedSpecies(categories, scientificName) {
-    const targetBinomial = binomialKey(scientificName);
+  function detectOtherIllustratedSpecies(categories, scientificName, equivalentNames = []) {
+    const targetKeys = new Set(
+      [scientificName, ...equivalentNames]
+        .map(binomialKey)
+        .filter(Boolean)
+    );
     return unique((categories || [])
       .filter((cat) => / - botanical illustrations$/i.test(cat))
       .map((cat) => cat.replace(/^Category:/i, "").replace(/ - botanical illustrations$/i, "").trim())
       .filter(isLikelySpeciesTaxon)
-      .filter((taxon) => binomialKey(taxon) !== targetBinomial));
+      .filter((taxon) => !targetKeys.has(binomialKey(taxon))));
   }
 
-  function binomialKey(taxon) { return String(taxon || "").trim().split(/\s+/).slice(0, 2).join(" ").toLocaleLowerCase("en"); }
+
+  function taxonCoreParts(taxon) {
+    return normalizeHybridMarker(taxon)
+      .split(/\s+/)
+      .filter((part) => part && part !== "×" && part.toLowerCase() !== "x");
+  }
+
+  function binomialKey(taxon) {
+    return taxonCoreParts(taxon).slice(0, 2).join(" ").toLocaleLowerCase("en");
+  }
+
   function isLikelySpeciesTaxon(taxon) {
-    const parts = String(taxon || "").trim().split(/\s+/);
+    const parts = taxonCoreParts(taxon);
     if (parts.length < 2) return false;
     const [genus, epithet] = parts;
     return /^[A-Z][A-Za-zÀ-ÖØ-öø-ÿ.-]+$/.test(genus) && /^[a-z][a-zà-öø-ÿ.-]+$/.test(epithet);

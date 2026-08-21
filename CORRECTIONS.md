@@ -86,3 +86,12 @@
 - Ajout visible de photos supplémentaires directement dans la section Photos, jusqu’à 5 pour une même observation.
 - Chaque photo conserve son organe Pl@ntNet (fleur, feuille, fruit, écorce/tronc, vue générale/autre).
 - La fiche Capture affiche toutes les photos d’une observation avec leur organe associé.
+
+
+## v17 — taxons hybrides et synonymes
+- Normalisation typographique des hybrides (`Rosa x odorata` → `Rosa × odorata`) sans modifier l'identité taxonomique.
+- La recherche d'illustrations accepte les variantes `×`, `x` et sans marqueur hybride.
+- Résolution Wikidata de la catégorie Commons, du nom taxonomique, des synonymes (P1420) et du basionyme (P566).
+- Recherche de fichiers Commons sous les synonymes taxonomiques vérifiés avant le fallback manuel.
+- Correction de la détection multi-espèces pour les nothotaxons : `Rosa × odorata` est maintenant analysé comme `Rosa odorata`, et non `Rosa ×`.
+- Réconciliation des anciennes entrées Herbier utilisant `x` ou `×` afin d'éviter des doublons d'espèces.
