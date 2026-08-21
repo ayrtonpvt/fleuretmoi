@@ -46,6 +46,9 @@ const galleryInput = $("#galleryInput");
 const photoSection = $("#photoSection");
 const photoGrid = $("#photoGrid");
 const photoCount = $("#photoCount");
+const addCameraPhotoButton = $("#addCameraPhotoButton");
+const addGalleryPhotoButton = $("#addGalleryPhotoButton");
+const photoLimitHint = $("#photoLimitHint");
 const identifyButton = $("#identifyButton");
 const statusText = $("#statusText");
 const historyList = $("#historyList");
@@ -529,6 +532,12 @@ async function addSelectedPhotos(input, source) {
 
 cameraInput.addEventListener("change", () => addSelectedPhotos(cameraInput, "camera"));
 galleryInput.addEventListener("change", () => addSelectedPhotos(galleryInput, "gallery"));
+addCameraPhotoButton?.addEventListener("click", () => {
+  if (state.photos.length < MAX_PHOTOS) cameraInput.click();
+});
+addGalleryPhotoButton?.addEventListener("click", () => {
+  if (state.photos.length < MAX_PHOTOS) galleryInput.click();
+});
 draftNote.addEventListener("input", () => { state.draftNote = draftNote.value; });
 
 function photoDateLabel(photo) {
@@ -568,6 +577,24 @@ function renderPhotos() {
   });
   photoSection.classList.toggle("hidden", state.photos.length === 0);
   photoCount.textContent = `${state.photos.length}/${MAX_PHOTOS}`;
+  const atLimit = state.photos.length >= MAX_PHOTOS;
+  if (addCameraPhotoButton) addCameraPhotoButton.disabled = atLimit;
+  if (addGalleryPhotoButton) addGalleryPhotoButton.disabled = atLimit;
+  if (photoLimitHint) {
+    photoLimitHint.textContent = atLimit
+      ? `Maximum de ${MAX_PHOTOS} photos atteint.`
+      : `${MAX_PHOTOS - state.photos.length} photo${MAX_PHOTOS - state.photos.length > 1 ? "s" : ""} encore possible${MAX_PHOTOS - state.photos.length > 1 ? "s" : ""}.`;
+  }
+}
+
+function organLabel(organ) {
+  return ({
+    flower: "Fleur",
+    leaf: "Feuille",
+    fruit: "Fruit",
+    bark: "Écorce / tronc",
+    auto: "Vue générale / autre",
+  })[organ] || "Vue générale / autre";
 }
 
 function buildFormData(photos) {
@@ -1203,11 +1230,17 @@ async function renderCapture(item, { preserveMedia = false } = {}) {
     capturePhotoGrid.innerHTML = "";
     photos.forEach((photo, index) => {
       if (!photo.blob) return;
+      const figure = document.createElement("figure");
+      figure.className = "capturePhotoItem";
       const img = document.createElement("img");
       img.src = blobUrl(photo.blob, "detailObjectUrls");
-      img.alt = `Photo ${index + 1} de l’observation`;
+      img.alt = `${organLabel(photo.organ)} · photo ${index + 1} de l’observation`;
       img.loading = "eager";
-      capturePhotoGrid.appendChild(img);
+      const caption = document.createElement("figcaption");
+      caption.className = "capturePhotoOrgan";
+      caption.textContent = organLabel(photo.organ);
+      figure.append(img, caption);
+      capturePhotoGrid.appendChild(figure);
     });
   }
 

@@ -143,6 +143,9 @@ h2 {
 .sectionHead { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
 
 .photoGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
+.morePhotoActions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0 18px; }
+.morePhotoActions .secondaryButton { flex: 1 1 190px; }
+.photoLimitHint { flex: 1 0 100%; margin: 0; font-size: .78rem; }
 .photoCard { overflow: hidden; border: 1px solid var(--line); border-radius: 16px; background: #fafcf9; }
 .photoPreviewButton { display: block; width: 100%; padding: 0; border: 0; background: #e7ece8; }
 .photoCard img { display: block; width: 100%; height: auto; max-height: 420px; object-fit: contain; background: #e7ece8; }
@@ -247,16 +250,35 @@ h2 {
   margin-top: 16px;
   padding-bottom: 2px;
 }
+.capturePhotoItem {
+  position: relative;
+  flex: 0 0 auto;
+  margin: 0;
+  scroll-snap-align: start;
+}
 .capturePhotoGrid img {
+  display: block;
   width: auto;
   height: auto;
   max-width: min(82vw, 420px);
   max-height: 62vh;
-  flex: 0 0 auto;
   object-fit: contain;
   border-radius: 16px;
   background: #e7ece8;
-  scroll-snap-align: start;
+}
+.capturePhotoOrgan {
+  position: absolute;
+  left: 9px;
+  bottom: 9px;
+  max-width: calc(100% - 18px);
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: rgba(20, 34, 24, .72);
+  color: #fff;
+  font-size: .72rem;
+  font-weight: 700;
+  line-height: 1;
+  backdrop-filter: blur(4px);
 }
 .locationRow { display: flex; align-items: center; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
 .locationText { font-size: .82rem; color: var(--muted); }

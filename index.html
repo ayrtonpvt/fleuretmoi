@@ -74,6 +74,11 @@
           <span id="photoCount" class="muted"></span>
         </div>
         <div id="photoGrid" class="photoGrid"></div>
+        <div id="morePhotoActions" class="morePhotoActions" aria-label="Ajouter d’autres photos de la même plante">
+          <button id="addCameraPhotoButton" class="secondaryButton" type="button">+ Prendre une autre photo</button>
+          <button id="addGalleryPhotoButton" class="secondaryButton" type="button">+ Ajouter depuis la galerie</button>
+          <p id="photoLimitHint" class="muted photoLimitHint"></p>
+        </div>
         <label class="fieldLabel" for="draftNote">Note personnelle <span class="muted">(facultatif)</span></label>
         <textarea id="draftNote" class="noteInput" rows="3" placeholder="Lieu précis, couleur, habitat, détail à retenir…"></textarea>
         <button id="identifyButton" class="primaryButton">Identifier la plante</button>
@@ -280,7 +285,7 @@
       <div class="photoMetaLine"></div>
       <div class="photoControls">
         <select aria-label="Partie de la plante">
-          <option value="auto">Détection automatique</option>
+          <option value="auto">Vue générale / autre (auto)</option>
           <option value="flower">Fleur</option>
           <option value="leaf">Feuille</option>
           <option value="fruit">Fruit</option>
@@ -450,7 +455,7 @@
 
   <script src="https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/full.umd.js" defer></script>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="" defer></script>
-  <script src="./app.js?v=25" defer></script>
-  <script src="./illustration-picker.js?v=25" defer></script>
+  <script src="./app.js?v=27" defer></script>
+  <script src="./illustration-picker.js?v=27" defer></script>
 </body>
 </html>

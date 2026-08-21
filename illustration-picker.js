@@ -44,6 +44,79 @@
   let editorState = null;
   let editorPointer = null;
 
+  function inferredImageMime(file) {
+    const declared = String(file?.type || "").toLowerCase();
+    if (["image/jpeg", "image/png", "image/webp", "image/gif"].includes(declared)) return declared;
+    const name = String(file?.name || "").toLowerCase();
+    if (/\.jpe?g$/.test(name)) return "image/jpeg";
+    if (/\.png$/.test(name)) return "image/png";
+    if (/\.webp$/.test(name)) return "image/webp";
+    if (/\.gif$/.test(name)) return "image/gif";
+    return declared.startsWith("image/") ? declared : "";
+  }
+
+  async function sniffImageMime(blob) {
+    try {
+      const bytes = new Uint8Array(await blob.slice(0, 16).arrayBuffer());
+      if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+      if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return "image/png";
+      if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38) return "image/gif";
+      if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
+          bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return "image/webp";
+    } catch {}
+    return "";
+  }
+
+  async function normalizeImportedImageFile(file) {
+    if (!file?.size) throw new Error("Le fichier choisi est vide.");
+    let mime = inferredImageMime(file) || await sniffImageMime(file);
+    if (!mime) mime = await sniffImageMime(file);
+    if (!mime) throw new Error("Format d’image non reconnu. Utilise un JPG, PNG ou WebP.");
+    if (!["image/jpeg", "image/png", "image/webp", "image/gif"].includes(mime)) {
+      throw new Error("Ce format d’image n’est pas pris en charge. Utilise un JPG, PNG ou WebP.");
+    }
+    // Certains sélecteurs de fichiers Android renvoient un JPEG avec un type vide
+    // ou application/octet-stream. Recréer un Blob avec le bon MIME suffit à le
+    // rendre décodable sans modifier les octets du fichier.
+    if (file.type !== mime) return new File([file], file.name || "illustration", { type: mime, lastModified: file.lastModified || Date.now() });
+    return file;
+  }
+
+  function decodeImageViaObjectUrl(blob) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(blob);
+      const image = new Image();
+      image.onload = () => { URL.revokeObjectURL(url); resolve(image); };
+      image.onerror = (event) => { URL.revokeObjectURL(url); reject(event); };
+      image.src = url;
+    });
+  }
+
+  function decodeImageViaDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(reader.error || new Error("Lecture du fichier impossible."));
+      reader.onload = () => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = (event) => reject(event);
+        image.src = String(reader.result || "");
+      };
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  async function loadIllustrationImage(blob) {
+    try {
+      return await decodeImageViaObjectUrl(blob);
+    } catch (firstError) {
+      // Fallback utile sur certains WebView/launchers Android qui échouent sur
+      // une URL blob issue du sélecteur de fichiers alors que le JPEG est valide.
+      try { return await decodeImageViaDataUrl(blob); }
+      catch { throw firstError; }
+    }
+  }
+
   function closeIllustrationPicker() {
     // Invalide aussi un téléchargement encore en cours : une ancienne sélection
     // ne doit jamais rouvrir l’éditeur après que l’utilisateur a quitté la fenêtre.
@@ -82,18 +155,17 @@
     const species = pickerState.species;
     const token = pickerState.token;
 
-    if (file.type && !file.type.startsWith("image/")) {
-      setPickerStatus("Le fichier choisi n’est pas une image.", true);
-      return;
-    }
-
     pickerState.choosing = true;
     updatePickerFallbackActions();
     renderPickerGrid();
     setPickerStatus("Préparation de l’image importée…");
 
     try {
-      await loadImageFromBlob(file);
+      const normalizedFile = await normalizeImportedImageFile(file);
+      // Décoder une seule fois ici : l’image déjà validée est transmise à
+      // l’éditeur pour éviter un second chargement inutile et potentiellement
+      // fragile sur certains navigateurs mobiles.
+      const decodedImage = await loadIllustrationImage(normalizedFile);
       if (token !== pickerState.token) return;
 
       pickerState.choosing = false;
@@ -101,12 +173,13 @@
       await openIllustrationEditor({
         mode: "new",
         species,
-        sourceBlob: file,
+        sourceBlob: normalizedFile,
+        decodedImage,
         metadata: {
           source: "manual",
-          fileName: file.name || "illustration",
-          mimeType: file.type || "",
-          fileSize: file.size || 0,
+          fileName: normalizedFile.name || "illustration",
+          mimeType: normalizedFile.type || "",
+          fileSize: normalizedFile.size || 0,
           selectedAt: Date.now(),
         },
       });
@@ -114,7 +187,7 @@
       if (token !== pickerState.token) return;
       console.error("Import manuel de l’illustration impossible", error);
       pickerState.choosing = false;
-      setPickerStatus("Cette image ne peut pas être ouverte par ce navigateur. Essaie un JPG, PNG ou WebP.", true);
+      setPickerStatus(error?.message || "Cette image ne peut pas être ouverte. Utilise un JPG, PNG ou WebP.", true);
       renderPickerGrid();
       updatePickerFallbackActions();
     }
@@ -400,9 +473,9 @@
     await openIllustrationEditor({ mode: "existing", species, sourceBlob, metadata: species.illustration });
   }
 
-  async function openIllustrationEditor({ mode, species, sourceBlob, metadata }) {
+  async function openIllustrationEditor({ mode, species, sourceBlob, metadata, decodedImage = null }) {
     try {
-      const image = await loadImageFromBlob(sourceBlob);
+      const image = decodedImage || await loadIllustrationImage(sourceBlob);
       const framing = mode === "existing" ? (metadata?.framing || {}) : {};
       const minZoom = illustrationFitZoom(image);
       const requestedZoom = Number.isFinite(Number(framing.zoom)) ? Number(framing.zoom) : 1;
@@ -543,7 +616,7 @@
   }
 
   async function extractIllustrationBackgroundColor(blob) {
-    const image = await loadImageFromBlob(blob);
+    const image = await loadIllustrationImage(blob);
     const canvas = document.createElement("canvas");
     canvas.width = 80;
     canvas.height = 100;

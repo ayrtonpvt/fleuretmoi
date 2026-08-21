@@ -80,3 +80,9 @@
 - Si Wikimedia ne trouve aucune illustration fiable, ces actions deviennent le fallback principal.
 - Une image importée passe par le même éditeur de cadrage/zoom et est enregistrée localement avec `source: "manual"`.
 - La recherche Google Images utilise le nom scientifique exact suivi de `botanical illustration` et n'effectue aucun téléchargement automatique.
+
+
+## v14 — observations multi-photos
+- Ajout visible de photos supplémentaires directement dans la section Photos, jusqu’à 5 pour une même observation.
+- Chaque photo conserve son organe Pl@ntNet (fleur, feuille, fruit, écorce/tronc, vue générale/autre).
+- La fiche Capture affiche toutes les photos d’une observation avec leur organe associé.
