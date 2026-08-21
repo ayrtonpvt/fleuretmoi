@@ -500,14 +500,47 @@ function getCurrentLocation(showErrors = true) {
   });
 }
 
+function inferredPhotoMime(file) {
+  const declared = String(file?.type || "").toLowerCase();
+  if (["image/jpeg", "image/png", "image/webp", "image/gif"].includes(declared)) return declared;
+  const name = String(file?.name || "").toLowerCase();
+  if (/\.jpe?g$/.test(name)) return "image/jpeg";
+  if (/\.png$/.test(name)) return "image/png";
+  if (/\.webp$/.test(name)) return "image/webp";
+  if (/\.gif$/.test(name)) return "image/gif";
+  return "";
+}
+
+async function sniffPhotoMime(file) {
+  try {
+    const bytes = new Uint8Array(await file.slice(0, 16).arrayBuffer());
+    if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+    if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return "image/png";
+    if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38) return "image/gif";
+    if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
+        bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return "image/webp";
+  } catch {}
+  return "";
+}
+
 async function makeStablePhotoFile(file) {
-  // Android camera/file pickers may expose a File backed by a temporary
-  // content URI. Reusing the <input> for a second capture can invalidate that
-  // backing blob before IndexedDB has persisted it. Reading the bytes now and
-  // rebuilding a File gives Fleuretmoi an independent, durable Blob.
+  // Read the bytes immediately: Android camera/file pickers may expose a File
+  // backed by a temporary content URI which can become invalid after the input
+  // is reused. Also do not trust Android's MIME blindly: a real JPEG is
+  // sometimes reported as application/octet-stream.
+  if (!file?.size) throw new Error("Le fichier photo est vide.");
+  const sniffedMime = await sniffPhotoMime(file);
+  const mime = sniffedMime || inferredPhotoMime(file);
+  if (!mime) throw new Error("Format d’image non reconnu.");
+  if (!["image/jpeg", "image/png", "image/webp", "image/gif"].includes(mime)) {
+    throw new Error("Format d’image non pris en charge.");
+  }
   const bytes = await file.arrayBuffer();
-  return new File([bytes], file.name || `fleuretmoi-${Date.now()}.jpg`, {
-    type: file.type || "image/jpeg",
+  const fallbackExt = mime === "image/png" ? ".png" : mime === "image/webp" ? ".webp" : mime === "image/gif" ? ".gif" : ".jpg";
+  const originalName = String(file.name || "").trim();
+  const name = originalName || `fleuretmoi-${Date.now()}${fallbackExt}`;
+  return new File([bytes], name, {
+    type: mime,
     lastModified: Number(file.lastModified) || Date.now(),
   });
 }
@@ -2333,7 +2366,7 @@ const editorDialog = $("#photoEditor");
 const editorCanvas = $("#editorCanvas");
 const editorZoom = $("#editorZoom");
 
-function loadImageFromBlob(blob) {
+function decodePhotoViaObjectUrl(blob) {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(blob);
     const img = new Image();
@@ -2341,6 +2374,32 @@ function loadImageFromBlob(blob) {
     img.onerror = (error) => { URL.revokeObjectURL(url); reject(error); };
     img.src = url;
   });
+}
+
+function decodePhotoViaDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error || new Error("Lecture de l’image impossible."));
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = (error) => reject(error);
+      img.src = String(reader.result || "");
+    };
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function loadImageFromBlob(blob) {
+  if (!(blob instanceof Blob) || !blob.size) throw new Error("Blob photo invalide.");
+  try {
+    return await decodePhotoViaObjectUrl(blob);
+  } catch (firstError) {
+    // Some Android WebViews fail to decode a perfectly valid JPEG from a blob:
+    // URL even though the same bytes work through a data URL.
+    try { return await decodePhotoViaDataUrl(blob); }
+    catch { throw firstError; }
+  }
 }
 
 function rotatedDimensions(img, rotation) {
