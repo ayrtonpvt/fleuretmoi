@@ -89,9 +89,9 @@
   async function normalizeImportedImageFile(file) {
     if (!file || Number(file.size || 0) <= 0) throw new Error("Le fichier choisi est vide.");
 
-    // Force a real byte copy immediately. On some Android file providers the
-    // File object is only a temporary view over a content:// URI; retaining the
-    // original File can make a perfectly valid JPEG unreadable a moment later.
+    // Byte-level fallback only. Do NOT call this first on Android: some file
+    // providers expose a perfectly displayable content:// image whose direct
+    // arrayBuffer/FileReader access is temporarily denied.
     const buffer = await readFileAsArrayBuffer(file);
     const bytes = new Uint8Array(buffer);
     const signatureMime = sniffImageMimeFromBytes(bytes.subarray(0, 32));
@@ -100,12 +100,86 @@
     const mime = signatureMime || (declaredMime.startsWith("image/") ? declaredMime : "") || namedMime || "application/octet-stream";
     const safeName = file.name || `illustration.${mime === "image/jpeg" ? "jpg" : mime.split("/")[1] || "img"}`;
 
-    // Use bytes, not `new File([file])`: the latter may preserve the same
-    // temporary Android Blob backing store instead of stabilising it.
     return new File([buffer], safeName, {
       type: mime,
       lastModified: Number(file.lastModified || Date.now()),
     });
+  }
+
+  function canvasToBlob(canvas, mime, quality) {
+    return new Promise((resolve, reject) => {
+      canvas.toBlob((blob) => {
+        if (blob && blob.size) resolve(blob);
+        else reject(new Error("La copie locale de l’image a échoué."));
+      }, mime, quality);
+    });
+  }
+
+  async function makeStableImportedBlob(image, originalFile) {
+    if (!image?.naturalWidth || !image?.naturalHeight) {
+      throw new Error("L’image sélectionnée n’a pas de dimensions lisibles.");
+    }
+
+    // Once the browser has decoded the Android File, copy the rendered pixels
+    // into a normal in-memory Blob. IndexedDB and the editor never need to keep
+    // the fragile content:// backed File alive. 4096 px is already well above
+    // the 1280×1600 final illustration while avoiding huge mobile canvases.
+    const maxSide = 4096;
+    const scale = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
+    const width = Math.max(1, Math.round(image.naturalWidth * scale));
+    const height = Math.max(1, Math.round(image.naturalHeight * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Le navigateur ne peut pas préparer cette image.");
+    ctx.drawImage(image, 0, 0, width, height);
+
+    const declaredMime = String(originalFile?.type || "").toLowerCase();
+    const namedMime = imageMimeFromName(originalFile?.name);
+    // Preserve PNG transparency. Everything else is normalised to JPEG, a
+    // format every target browser and IndexedDB implementation handles well.
+    const outputMime = declaredMime === "image/png" || namedMime === "image/png" ? "image/png" : "image/jpeg";
+    return canvasToBlob(canvas, outputMime, outputMime === "image/jpeg" ? 0.95 : undefined);
+  }
+
+  async function prepareImportedIllustration(file) {
+    if (!file || Number(file.size || 0) <= 0) throw new Error("Le fichier choisi est vide.");
+
+    let decodedImage = null;
+    let firstError = null;
+
+    // Primary path: let <img> consume the File directly. This is the important
+    // Android fix: it avoids file.arrayBuffer()/FileReader before the browser
+    // has had a chance to use its native content-provider decoder.
+    try {
+      decodedImage = await decodeImageViaObjectUrl(file);
+    } catch (error) {
+      firstError = error;
+    }
+
+    // Some WebViews succeed through createImageBitmap even when <img> + blob:
+    // does not. This path still avoids forcing an ArrayBuffer copy first.
+    if (!decodedImage) {
+      try { decodedImage = await decodeImageViaBitmap(file); }
+      catch { /* Continue to the byte-level fallback below. */ }
+    }
+
+    // Last resort for conventional local files: inspect/copy the bytes and fix
+    // a bad MIME. On problematic content:// providers this may fail, which is
+    // why it is deliberately last rather than first.
+    if (!decodedImage) {
+      try {
+        const normalizedFile = await normalizeImportedImageFile(file);
+        decodedImage = await loadIllustrationImage(normalizedFile);
+      } catch (error) {
+        const detail = error?.message || firstError?.message || "";
+        throw new Error(detail || "Le navigateur n’a pas pu accéder au fichier sélectionné.");
+      }
+    }
+
+    const stableBlob = await makeStableImportedBlob(decodedImage, file);
+    return { decodedImage, stableBlob };
   }
 
   function decodeImageViaObjectUrl(blob) {
@@ -205,11 +279,7 @@
     setPickerStatus("Préparation de l’image importée…");
 
     try {
-      const normalizedFile = await normalizeImportedImageFile(file);
-      // Décoder une seule fois ici : l’image déjà validée est transmise à
-      // l’éditeur pour éviter un second chargement inutile et potentiellement
-      // fragile sur certains navigateurs mobiles.
-      const decodedImage = await loadIllustrationImage(normalizedFile);
+      const { decodedImage, stableBlob } = await prepareImportedIllustration(file);
       if (token !== pickerState.token) return;
 
       pickerState.choosing = false;
@@ -217,13 +287,15 @@
       await openIllustrationEditor({
         mode: "new",
         species,
-        sourceBlob: normalizedFile,
+        sourceBlob: stableBlob,
         decodedImage,
         metadata: {
           source: "manual",
-          fileName: normalizedFile.name || "illustration",
-          mimeType: normalizedFile.type || "",
-          fileSize: normalizedFile.size || 0,
+          fileName: file.name || "illustration",
+          mimeType: stableBlob.type || file.type || "",
+          fileSize: stableBlob.size || 0,
+          originalMimeType: file.type || "",
+          originalFileSize: file.size || 0,
           selectedAt: Date.now(),
         },
       });

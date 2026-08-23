@@ -95,3 +95,12 @@
 - Recherche de fichiers Commons sous les synonymes taxonomiques vérifiés avant le fallback manuel.
 - Correction de la détection multi-espèces pour les nothotaxons : `Rosa × odorata` est maintenant analysé comme `Rosa odorata`, et non `Rosa ×`.
 - Réconciliation des anciennes entrées Herbier utilisant `x` ou `×` afin d'éviter des doublons d'espèces.
+
+## v19 — import manuel Android sans lecture binaire préalable
+
+- L’import d’une illustration essaie désormais d’abord de décoder directement le `File` fourni par Android via une URL Blob.
+- `arrayBuffer()` / `FileReader` ne sont plus utilisés avant le décodage : ils ne servent qu’en dernier recours.
+- Une fois l’image décodée, ses pixels sont copiés via canvas dans un Blob local stable avant l’éditeur et IndexedDB.
+- Un second essai via `createImageBitmap()` est prévu pour les WebView où `<img src=blob:…>` échoue.
+- Le Blob stable est limité à 4096 px sur le grand côté, largement suffisant pour la sortie 1280×1600 et plus sûr en mémoire sur mobile.
+- Cache PWA : `fleuretmoi-pages-v32`.
