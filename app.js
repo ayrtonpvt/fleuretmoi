@@ -1,10 +1,18 @@
 const MAX_PHOTOS = 5;
+const PHOTO_MAX_DIMENSION = 1600;
+const PHOTO_JPEG_QUALITY = 0.82;
+const DATA_INTEGRITY_STORAGE_KEY = "fleuretmoi-data-integrity-version";
+const DATA_INTEGRITY_VERSION = "2026-08-performance-v1";
 const DB_NAME = "which-flower-db";
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const STORE_HISTORY = "history"; // legacy store kept for migration/compatibility
 const STORE_QUEUE = "queue";
 const STORE_OBSERVATIONS = "observations";
+const STORE_OBSERVATION_SUMMARIES = "observationSummaries";
 const STORE_SPECIES = "species";
+const SUMMARY_MIGRATION_BATCH_SIZE = 8;
+const SPECIES_OBSERVATION_BATCH_SIZE = 10;
+const MAP_PRELOAD_PHOTO_LIMIT = 48;
 const API_KEY_STORAGE = "which-flower-plantnet-api-key";
 const PLANTNET_API_URL = "https://my-api.plantnet.org/v2/identify/all";
 
@@ -36,6 +44,18 @@ const state = {
   historyVisibleCount: 60,
   herbariumSort: "alpha",
   deferredRefreshTimer: null,
+  herbariumRenderToken: 0,
+  herbariumSearchTimer: null,
+  historyRenderToken: 0,
+  historyThumbObserver: null,
+  herbariumThumbObserver: null,
+  speciesThumbObserver: null,
+  speciesRenderToken: 0,
+  speciesObservationSummaries: [],
+  speciesVisibleCount: SPECIES_OBSERVATION_BATCH_SIZE,
+  summaryIndexReady: null,
+  summaryMigrationRunning: false,
+  mapRenderToken: 0,
   speciesOpenedFromHerbarium: false,
 };
 
@@ -121,6 +141,13 @@ function openDb() {
         const species = db.createObjectStore(STORE_SPECIES, { keyPath: "id", autoIncrement: true });
         species.createIndex("scientificKey", "scientificKey", { unique: true });
         species.createIndex("lastSeenAt", "lastSeenAt", { unique: false });
+      }
+      if (!db.objectStoreNames.contains(STORE_OBSERVATION_SUMMARIES)) {
+        const summaries = db.createObjectStore(STORE_OBSERVATION_SUMMARIES, { keyPath: "id" });
+        summaries.createIndex("createdAt", "createdAt", { unique: false });
+        summaries.createIndex("captureAt", "captureAt", { unique: false });
+        summaries.createIndex("speciesId", "speciesId", { unique: false });
+        summaries.createIndex("verified", "verified", { unique: false });
       }
 
       // Migrate the v2 history once, inside the database upgrade transaction.
@@ -235,6 +262,175 @@ async function dbGetAllByIndex(storeName, indexName, value) {
   return result;
 }
 
+async function dbGetRecentObservations(limit = 60) {
+  const db = await openDb();
+  const tx = db.transaction(STORE_OBSERVATIONS, "readonly");
+  const store = tx.objectStore(STORE_OBSERVATIONS);
+  const captureIndex = store.index("captureAt");
+  const totalRequest = store.count();
+  const indexedCountRequest = captureIndex.count();
+  const rowsPromise = new Promise((resolve, reject) => {
+    const rows = [];
+    const request = captureIndex.openCursor(null, "prev");
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor || rows.length >= limit) {
+        resolve(rows);
+        return;
+      }
+      rows.push(cursor.value);
+      if (rows.length >= limit) resolve(rows);
+      else cursor.continue();
+    };
+  });
+
+  const [total, indexedCount, rows] = await Promise.all([
+    requestResult(totalRequest),
+    requestResult(indexedCountRequest),
+    rowsPromise,
+  ]);
+  await transactionDone(tx);
+
+  // Normal Fleuretmoi records always have captureAt. Keep a compatibility
+  // fallback for an old/malformed import instead of silently hiding rows.
+  if (indexedCount !== total) {
+    const allRows = (await dbGetAll(STORE_OBSERVATIONS))
+      .sort((a, b) => (b.captureAt || b.createdAt) - (a.captureAt || a.createdAt));
+    return { rows: allRows.slice(0, limit), total: allRows.length };
+  }
+  return { rows, total };
+}
+
+async function dbGetSpeciesCardData(speciesIds, maxPhotos = 3) {
+  const ids = [...new Set(speciesIds.filter((id) => id != null))];
+  const output = new Map();
+  if (!ids.length) return output;
+
+  const db = await openDb();
+  const tx = db.transaction(STORE_OBSERVATIONS, "readonly");
+  const index = tx.objectStore(STORE_OBSERVATIONS).index("speciesId");
+
+  const jobs = ids.map((speciesId) => {
+    const range = IDBKeyRange.only(speciesId);
+    const countPromise = requestResult(index.count(range));
+    const photosPromise = new Promise((resolve, reject) => {
+      const photoBlobs = [];
+      const request = index.openCursor(range, "prev");
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor || photoBlobs.length >= maxPhotos) {
+          resolve(photoBlobs);
+          return;
+        }
+        const observation = cursor.value;
+        for (const photo of observation?.photos || []) {
+          if (photo?.blob) photoBlobs.push(photo.blob);
+          if (photoBlobs.length >= maxPhotos) break;
+        }
+        if (photoBlobs.length >= maxPhotos) resolve(photoBlobs);
+        else cursor.continue();
+      };
+    });
+    return Promise.all([countPromise, photosPromise]).then(([count, photoBlobs]) => ({ speciesId, count, photoBlobs }));
+  });
+
+  const results = await Promise.all(jobs);
+  await transactionDone(tx);
+  results.forEach((entry) => output.set(entry.speciesId, entry));
+  return output;
+}
+
+async function dbGetRecentObservationSummaries(limit = 60) {
+  if (!(await checkSummaryIndexReady())) {
+    const fallback = await dbGetRecentObservations(limit);
+    return { rows: fallback.rows.map((row) => makeObservationSummary(row)).filter(Boolean), total: fallback.total, fallback: true };
+  }
+
+  const db = await openDb();
+  const tx = db.transaction(STORE_OBSERVATION_SUMMARIES, "readonly");
+  const store = tx.objectStore(STORE_OBSERVATION_SUMMARIES);
+  const captureIndex = store.index("captureAt");
+  const totalRequest = store.count();
+  const rowsPromise = new Promise((resolve, reject) => {
+    const rows = [];
+    const request = captureIndex.openCursor(null, "prev");
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor || rows.length >= limit) {
+        resolve(rows);
+        return;
+      }
+      rows.push(cursor.value);
+      if (rows.length >= limit) resolve(rows);
+      else cursor.continue();
+    };
+  });
+  const [total, rows] = await Promise.all([requestResult(totalRequest), rowsPromise]);
+  await transactionDone(tx);
+  return { rows, total, fallback: false };
+}
+
+async function getAllObservationSummariesForLists() {
+  if (await checkSummaryIndexReady()) return dbGetAll(STORE_OBSERVATION_SUMMARIES);
+
+  // During the one-time migration, merge summaries already built with only
+  // the still-missing observation records. Never clone the whole photo store
+  // in a single getAll() just because the lightweight index is incomplete.
+  const [summaries, observationKeys] = await Promise.all([
+    dbGetAll(STORE_OBSERVATION_SUMMARIES),
+    dbGetAllKeys(STORE_OBSERVATIONS),
+  ]);
+  const present = new Set(summaries.map((summary) => summary.id));
+  const missingKeys = observationKeys.filter((id) => !present.has(id));
+  const rows = [...summaries];
+  for (let offset = 0; offset < missingKeys.length; offset += SUMMARY_MIGRATION_BATCH_SIZE) {
+    const batch = missingKeys.slice(offset, offset + SUMMARY_MIGRATION_BATCH_SIZE);
+    const observations = await dbGetMany(STORE_OBSERVATIONS, batch);
+    rows.push(...observations.map((row, index) => makeObservationSummary(row, batch[index])).filter(Boolean));
+  }
+  return rows;
+}
+
+async function getSpeciesObservationSummaries(speciesId) {
+  if (!speciesId) return [];
+  if (await checkSummaryIndexReady()) {
+    return (await dbGetAllByIndex(STORE_OBSERVATION_SUMMARIES, "speciesId", speciesId))
+      .filter((summary) => summary.verified && summary.speciesId === speciesId)
+      .sort((a, b) => (b.captureAt || b.createdAt) - (a.captureAt || a.createdAt));
+  }
+  return (await dbGetAllByIndex(STORE_OBSERVATIONS, "speciesId", speciesId))
+    .filter((observation) => observation.verified && observation.speciesId === speciesId)
+    .map((observation) => makeObservationSummary(observation))
+    .filter(Boolean)
+    .sort((a, b) => (b.captureAt || b.createdAt) - (a.captureAt || a.createdAt));
+}
+
+async function dbGetSpeciesCardSummaryData(speciesIds, maxObservationCandidates = 3) {
+  if (!(await checkSummaryIndexReady())) return { legacy: true, data: await dbGetSpeciesCardData(speciesIds, 3) };
+  const wanted = new Set(speciesIds.filter((id) => id != null));
+  const grouped = new Map();
+  const summaries = await dbGetAll(STORE_OBSERVATION_SUMMARIES);
+  for (const summary of summaries) {
+    if (!summary.verified || !wanted.has(summary.speciesId)) continue;
+    if (!grouped.has(summary.speciesId)) grouped.set(summary.speciesId, []);
+    grouped.get(summary.speciesId).push(summary);
+  }
+  const data = new Map();
+  for (const speciesId of wanted) {
+    const rows = grouped.get(speciesId) || [];
+    rows.sort((a, b) => (b.captureAt || b.createdAt) - (a.captureAt || a.createdAt));
+    data.set(speciesId, {
+      speciesId,
+      count: rows.length,
+      photoObservationIds: rows.filter((row) => row.photoCount > 0).slice(0, maxObservationCandidates).map((row) => row.id),
+    });
+  }
+  return { legacy: false, data };
+}
+
 async function dbDelete(storeName, id) {
   const db = await openDb();
   const tx = db.transaction(storeName, "readwrite");
@@ -247,6 +443,175 @@ async function dbClear(storeName) {
   const tx = db.transaction(storeName, "readwrite");
   await requestResult(tx.objectStore(storeName).clear());
   await transactionDone(tx);
+}
+
+async function dbGetAllKeys(storeName) {
+  const db = await openDb();
+  const tx = db.transaction(storeName, "readonly");
+  const result = await requestResult(tx.objectStore(storeName).getAllKeys());
+  await transactionDone(tx);
+  return result;
+}
+
+async function dbGetMany(storeName, ids) {
+  if (!ids.length) return [];
+  const db = await openDb();
+  const tx = db.transaction(storeName, "readonly");
+  const store = tx.objectStore(storeName);
+  const requests = ids.map((id) => requestResult(store.get(id)));
+  const rows = await Promise.all(requests);
+  await transactionDone(tx);
+  return rows;
+}
+
+async function dbPutManySummaries(summaries) {
+  if (!summaries.length) return;
+  const db = await openDb();
+  const tx = db.transaction(STORE_OBSERVATION_SUMMARIES, "readwrite");
+  const store = tx.objectStore(STORE_OBSERVATION_SUMMARIES);
+  summaries.forEach((summary) => store.put(summary));
+  await transactionDone(tx);
+}
+
+async function dbDeleteSummaryKeys(ids) {
+  if (!ids.length) return;
+  const db = await openDb();
+  const tx = db.transaction(STORE_OBSERVATION_SUMMARIES, "readwrite");
+  const store = tx.objectStore(STORE_OBSERVATION_SUMMARIES);
+  ids.forEach((id) => store.delete(id));
+  await transactionDone(tx);
+}
+
+function makeObservationSummary(observation, forcedId = observation?.id) {
+  if (!observation || forcedId == null) return null;
+  const createdAt = Number.isFinite(observation.createdAt) ? observation.createdAt : Date.now();
+  const captureAt = Number.isFinite(observation.captureAt) ? observation.captureAt : createdAt;
+  const rawLatitude = observation.location?.latitude;
+  const rawLongitude = observation.location?.longitude;
+  const latitude = rawLatitude == null ? NaN : Number(rawLatitude);
+  const longitude = rawLongitude == null ? NaN : Number(rawLongitude);
+  const location = Number.isFinite(latitude) && Number.isFinite(longitude) ? { latitude, longitude } : null;
+  const photos = Array.isArray(observation.photos) ? observation.photos : [];
+  return {
+    id: forcedId,
+    createdAt,
+    captureAt,
+    verified: Boolean(observation.verified),
+    verifiedAt: observation.verifiedAt || null,
+    speciesId: observation.speciesId || null,
+    selectionType: observation.selection?.type === "manual" ? "manual" : "plantnet",
+    commonName: observation.commonName || "",
+    scientificName: observation.scientificName || "",
+    scientificNameWithoutAuthor: observation.scientificNameWithoutAuthor || observation.scientificName || "",
+    score: observation.score != null && Number.isFinite(Number(observation.score)) ? Number(observation.score) : null,
+    location,
+    note: observation.note || "",
+    photoCount: photos.reduce((count, photo) => count + (photo?.blob instanceof Blob ? 1 : 0), 0),
+  };
+}
+
+async function dbAddObservation(observation) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([STORE_OBSERVATIONS, STORE_OBSERVATION_SUMMARIES], "readwrite");
+    const observationsStore = tx.objectStore(STORE_OBSERVATIONS);
+    const summariesStore = tx.objectStore(STORE_OBSERVATION_SUMMARIES);
+    const request = observationsStore.add(observation);
+    let id = null;
+    request.onsuccess = () => {
+      id = request.result;
+      observation.id = id;
+      const summary = makeObservationSummary(observation, id);
+      if (summary) summariesStore.put(summary);
+    };
+    request.onerror = () => reject(request.error);
+    tx.oncomplete = () => resolve(id);
+    tx.onabort = () => reject(tx.error || new Error("Écriture de l’observation annulée."));
+    tx.onerror = () => reject(tx.error || new Error("Erreur lors de l’écriture de l’observation."));
+  });
+}
+
+async function dbPutObservation(observation) {
+  if (observation?.id == null) throw new Error("Impossible de mettre à jour une observation sans identifiant.");
+  const db = await openDb();
+  const tx = db.transaction([STORE_OBSERVATIONS, STORE_OBSERVATION_SUMMARIES], "readwrite");
+  const observationsStore = tx.objectStore(STORE_OBSERVATIONS);
+  const summariesStore = tx.objectStore(STORE_OBSERVATION_SUMMARIES);
+  const request = observationsStore.put(observation);
+  const summary = makeObservationSummary(observation);
+  if (summary) summariesStore.put(summary);
+  const id = await requestResult(request);
+  await transactionDone(tx);
+  return id;
+}
+
+async function dbDeleteObservation(id) {
+  const db = await openDb();
+  const tx = db.transaction([STORE_OBSERVATIONS, STORE_OBSERVATION_SUMMARIES], "readwrite");
+  tx.objectStore(STORE_OBSERVATIONS).delete(id);
+  tx.objectStore(STORE_OBSERVATION_SUMMARIES).delete(id);
+  await transactionDone(tx);
+}
+
+async function checkSummaryIndexReady({ force = false } = {}) {
+  if (!force && state.summaryIndexReady === true) return true;
+  const [observationKeys, summaryKeys] = await Promise.all([
+    dbGetAllKeys(STORE_OBSERVATIONS),
+    dbGetAllKeys(STORE_OBSERVATION_SUMMARIES),
+  ]);
+  if (observationKeys.length !== summaryKeys.length) {
+    state.summaryIndexReady = false;
+    return false;
+  }
+  const summarySet = new Set(summaryKeys);
+  const ready = observationKeys.every((key) => summarySet.has(key));
+  state.summaryIndexReady = ready;
+  return ready;
+}
+
+function waitForIdleTurn() {
+  return new Promise((resolve) => {
+    if (typeof requestIdleCallback === "function") requestIdleCallback(() => resolve(), { timeout: 1200 });
+    else setTimeout(resolve, 24);
+  });
+}
+
+async function migrateObservationSummariesInBatches() {
+  if (state.summaryMigrationRunning) return false;
+  if (await checkSummaryIndexReady({ force: true })) return false;
+  state.summaryMigrationRunning = true;
+  let changed = false;
+  try {
+    const [observationKeys, summaryKeys] = await Promise.all([
+      dbGetAllKeys(STORE_OBSERVATIONS),
+      dbGetAllKeys(STORE_OBSERVATION_SUMMARIES),
+    ]);
+    const observationSet = new Set(observationKeys);
+    const summarySet = new Set(summaryKeys);
+    const extraSummaryKeys = summaryKeys.filter((key) => !observationSet.has(key));
+    const missingObservationKeys = observationKeys.filter((key) => !summarySet.has(key));
+
+    for (let offset = 0; offset < extraSummaryKeys.length; offset += SUMMARY_MIGRATION_BATCH_SIZE) {
+      await waitForIdleTurn();
+      const batch = extraSummaryKeys.slice(offset, offset + SUMMARY_MIGRATION_BATCH_SIZE);
+      await dbDeleteSummaryKeys(batch);
+      changed = true;
+    }
+
+    for (let offset = 0; offset < missingObservationKeys.length; offset += SUMMARY_MIGRATION_BATCH_SIZE) {
+      await waitForIdleTurn();
+      const batch = missingObservationKeys.slice(offset, offset + SUMMARY_MIGRATION_BATCH_SIZE);
+      const observations = await dbGetMany(STORE_OBSERVATIONS, batch);
+      const summaries = observations.map((observation, index) => makeObservationSummary(observation, batch[index])).filter(Boolean);
+      await dbPutManySummaries(summaries);
+      if (summaries.length) changed = true;
+    }
+
+    await checkSummaryIndexReady({ force: true });
+    return changed;
+  } finally {
+    state.summaryMigrationRunning = false;
+  }
 }
 
 function setConnectionUi() {
@@ -559,6 +924,57 @@ async function makeStablePhotoFile(file) {
   });
 }
 
+function canvasToBlob(canvas, type, quality) {
+  return new Promise((resolve) => canvas.toBlob(resolve, type, quality));
+}
+
+async function optimizePhotoForStorage(file) {
+  // Keep the original bytes as a safe fallback. Metadata is extracted before
+  // this conversion, because canvas export intentionally strips EXIF/XMP.
+  if (!(file instanceof Blob) || !file.size) return file;
+  if (file.type === "image/gif") return file;
+
+  let image;
+  try {
+    image = await loadImageFromBlob(file);
+  } catch {
+    return file;
+  }
+
+  const width = Number(image.naturalWidth || image.width);
+  const height = Number(image.naturalHeight || image.height);
+  if (!width || !height) return file;
+
+  const largestSide = Math.max(width, height);
+  const scale = Math.min(1, PHOTO_MAX_DIMENSION / largestSide);
+  // Small JPEGs are already cheap to keep and recompressing them can only
+  // waste CPU or degrade quality. Large files are recompressed even if their
+  // pixel dimensions are modest (common with PNG exports).
+  if (scale === 1 && file.type === "image/jpeg" && file.size <= 900 * 1024) return file;
+
+  const targetWidth = Math.max(1, Math.round(width * scale));
+  const targetHeight = Math.max(1, Math.round(height * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = targetWidth;
+  canvas.height = targetHeight;
+  const ctx = canvas.getContext("2d", { alpha: false });
+  if (!ctx) return file;
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, targetWidth, targetHeight);
+  ctx.drawImage(image, 0, 0, targetWidth, targetHeight);
+
+  const blob = await canvasToBlob(canvas, "image/jpeg", PHOTO_JPEG_QUALITY);
+  canvas.width = 1;
+  canvas.height = 1;
+  if (!blob?.size) return file;
+  // Never replace a source with a larger JPEG when no resize was needed.
+  if (scale === 1 && blob.size >= file.size) return file;
+
+  const rawName = String(file.name || `fleuretmoi-${Date.now()}`);
+  const name = /\.[^.]+$/.test(rawName) ? rawName.replace(/\.[^.]+$/, ".jpg") : `${rawName}.jpg`;
+  return new File([blob], name, { type: "image/jpeg", lastModified: Number(file.lastModified) || Date.now() });
+}
+
 async function addSelectedPhotos(input, source) {
   const selectedFiles = [...input.files];
   const room = MAX_PHOTOS - state.photos.length;
@@ -573,8 +989,13 @@ async function addSelectedPhotos(input, source) {
   try {
     // Stabilise every selected file before clearing/reusing the picker.
     for (const originalFile of incoming) {
-      const file = await makeStablePhotoFile(originalFile);
-      const metadata = await extractPhotoMetadata(file, source);
+      const stableFile = await makeStablePhotoFile(originalFile);
+      // Metadata parsing/geolocation and image compression are independent.
+      // Running them together avoids adding their latency one after another.
+      const [metadata, file] = await Promise.all([
+        extractPhotoMetadata(stableFile, source),
+        optimizePhotoForStorage(stableFile),
+      ]);
       state.photos.push({
         file,
         organ: "auto",
@@ -965,7 +1386,8 @@ identifyButton.addEventListener("click", async () => {
     statusText.textContent = result.remainingIdentificationRequests != null
       ? `${result.remainingIdentificationRequests} identifications Pl@ntNet restantes aujourd’hui.`
       : "Identification terminée.";
-    await refreshAllLists();
+    // Open the result first. Hidden Herbier/Carte lists are rebuilt only when
+    // the user actually visits them, rather than delaying this navigation.
     await openCapture(observationId, { type: "main", value: "camera" });
   } catch (error) {
     if (!navigator.onLine) await queueCurrentPhotos();
@@ -1018,16 +1440,17 @@ async function saveObservation(result, photos = [], options = {}) {
     note: options.note || "",
   };
   applyCandidateToObservation(observation, observation.selection, best);
-  return dbAdd(STORE_OBSERVATIONS, observation);
+  return dbAddObservation(observation);
 }
 
 async function recomputeSpecies(speciesId) {
   if (!speciesId) return null;
   const species = await dbGet(STORE_SPECIES, speciesId);
   if (!species) return null;
-  const observations = (await dbGetAllByIndex(STORE_OBSERVATIONS, "speciesId", speciesId))
-    .filter((observation) => observation.verified && observation.speciesId === speciesId)
-    .sort((a, b) => (b.captureAt || b.createdAt) - (a.captureAt || a.createdAt));
+  // Pass 2: range/count repair reads the lightweight summary index whenever
+  // it is complete. The full observation records are only a compatibility
+  // fallback during the one-time v4 summary migration.
+  const observations = await getSpeciesObservationSummaries(speciesId);
 
   if (!observations.length) {
     await dbDelete(STORE_SPECIES, speciesId);
@@ -1037,7 +1460,16 @@ async function recomputeSpecies(speciesId) {
   const dates = observations.map((observation) => observation.captureAt || observation.createdAt).filter(Number.isFinite);
   species.firstSeenAt = dates.length ? Math.min(...dates) : species.firstSeenAt || Date.now();
   species.lastSeenAt = dates.length ? Math.max(...dates) : species.lastSeenAt || Date.now();
-  // speciesId on observations is the canonical relation. Keep old observationIds out of future records.
+  delete species.observationIds;
+  await dbPut(STORE_SPECIES, species);
+  return species;
+}
+
+async function extendSpeciesRange(species, observation) {
+  if (!species) return null;
+  const timestamp = observation.captureAt || observation.createdAt || Date.now();
+  species.firstSeenAt = Number.isFinite(species.firstSeenAt) ? Math.min(species.firstSeenAt, timestamp) : timestamp;
+  species.lastSeenAt = Number.isFinite(species.lastSeenAt) ? Math.max(species.lastSeenAt, timestamp) : timestamp;
   delete species.observationIds;
   await dbPut(STORE_SPECIES, species);
   return species;
@@ -1094,6 +1526,7 @@ async function getOrCreateSpeciesForCandidate(candidate, observation) {
 
 async function assignObservationToSpecies(observation, requestedSelection = getObservationSelection(observation)) {
   const oldSpeciesId = observation.speciesId || null;
+  const wasVerified = Boolean(observation.verified);
   let selection = requestedSelection;
   let candidate;
 
@@ -1113,9 +1546,12 @@ async function assignObservationToSpecies(observation, requestedSelection = getO
   observation.speciesId = species.id;
   observation.verified = true;
   observation.verifiedAt = observation.verifiedAt || Date.now();
-  await dbPut(STORE_OBSERVATIONS, observation);
+  await dbPutObservation(observation);
 
-  await recomputeSpecies(species.id);
+  // Confirming an observation normally only widens the species date range, so
+  // avoid rescanning the species entirely. A full lightweight-summary repair
+  // is reserved for removals/reassignments where a boundary may shrink.
+  if (!wasVerified || oldSpeciesId !== species.id) await extendSpeciesRange(species, observation);
   if (oldSpeciesId && oldSpeciesId !== species.id) await recomputeSpecies(oldSpeciesId);
   return { species, isNew };
 }
@@ -1125,7 +1561,7 @@ async function unverifyObservation(observation) {
   observation.verified = false;
   observation.verifiedAt = null;
   observation.speciesId = null;
-  await dbPut(STORE_OBSERVATIONS, observation);
+  await dbPutObservation(observation);
   if (oldSpeciesId) await recomputeSpecies(oldSpeciesId);
 }
 
@@ -1134,7 +1570,7 @@ async function setObservationSelection(observation, selection) {
   if (selection.type === "manual") candidate = normalizeCandidate({ ...selection.candidate, source: "manual" });
   else candidate = normalizeCandidate(getResultFromObservation(observation).results?.[selection.index] || {});
   applyCandidateToObservation(observation, selection, candidate);
-  await dbPut(STORE_OBSERVATIONS, observation);
+  await dbPutObservation(observation);
 }
 
 async function syncVerifiedSpecies() {
@@ -1146,7 +1582,7 @@ async function syncVerifiedSpecies() {
       if (observation.speciesId) {
         touchedSpecies.add(observation.speciesId);
         observation.speciesId = null;
-        await dbPut(STORE_OBSERVATIONS, observation);
+        await dbPutObservation(observation);
       }
       continue;
     }
@@ -1162,7 +1598,7 @@ async function syncVerifiedSpecies() {
     } else {
       applyCandidateToObservation(observation, selection, candidate);
       if (!observation.selection) observation.selection = selection;
-      await dbPut(STORE_OBSERVATIONS, observation);
+      await dbPutObservation(observation);
       touchedSpecies.add(linkedSpecies.id);
     }
   }
@@ -1170,6 +1606,19 @@ async function syncVerifiedSpecies() {
   const speciesRows = await dbGetAll(STORE_SPECIES);
   for (const species of speciesRows) touchedSpecies.add(species.id);
   for (const speciesId of touchedSpecies) await recomputeSpecies(speciesId);
+}
+
+async function ensureDataIntegrityOnce() {
+  if (localStorage.getItem(DATA_INTEGRITY_STORAGE_KEY) === DATA_INTEGRITY_VERSION) return false;
+  await syncVerifiedSpecies();
+  localStorage.setItem(DATA_INTEGRITY_STORAGE_KEY, DATA_INTEGRITY_VERSION);
+  return true;
+}
+
+function runMaintenanceWhenIdle(task) {
+  const run = () => Promise.resolve().then(task).catch((error) => console.error("Maintenance Fleuretmoi impossible", error));
+  if (typeof requestIdleCallback === "function") requestIdleCallback(run, { timeout: 4000 });
+  else setTimeout(run, 800);
 }
 
 function hideAllViews() {
@@ -1239,6 +1688,13 @@ function recordRoute(route, mode = "push") {
 
 async function showMainView(name, { historyMode = "push", preserveHerbarium = false, restoreScrollY = null } = {}) {
   if (!["camera", "herbarium", "map"].includes(name)) name = "camera";
+  state.speciesRenderToken += 1;
+  state.speciesThumbObserver?.disconnect();
+  if (name !== "camera") {
+    state.historyRenderToken += 1;
+    state.historyThumbObserver?.disconnect();
+  }
+  if (name !== "map") state.mapRenderToken += 1;
 
   // Quand on revient d’une fiche d’espèce vers l’Herbier, le DOM de la liste
   // existe toujours derrière la vue détail. Ne pas le reconstruire permet un
@@ -1256,8 +1712,11 @@ async function showMainView(name, { historyMode = "push", preserveHerbarium = fa
   // transition, sinon les photos disparaissent une frame avant le changement.
   clearObjectUrls("detailObjectUrls");
   clearObjectUrls("speciesObjectUrls");
+  if (name !== "map") clearObjectUrls("mapObjectUrls");
 
-  if (name === "map") {
+  if (name === "camera") {
+    await Promise.all([renderQueue(), renderHistory()]);
+  } else if (name === "map") {
     await renderMap();
     setTimeout(() => state.map?.invalidateSize(), 50);
   }
@@ -1274,9 +1733,17 @@ async function openCapture(id, returnTarget = { type: "main", value: state.curre
   }
   state.currentObservationId = id;
   state.captureReturn = returnTarget;
+  state.historyRenderToken += 1;
+  state.historyThumbObserver?.disconnect();
+  state.speciesRenderToken += 1;
+  state.speciesThumbObserver?.disconnect();
+  state.mapRenderToken += 1;
   await renderCapture(item);
   await decodeImagesIn($("#capturePhotoGrid"));
   await switchToView(views.capture, { hideNavigation: true, scrollY: 0 });
+  clearObjectUrls("speciesObjectUrls");
+  clearObjectUrls("historyObjectUrls");
+  clearObjectUrls("mapObjectUrls");
   recordRoute({ type: "capture", id, returnTarget }, historyMode);
   return true;
 }
@@ -1657,10 +2124,10 @@ $("#saveLocationButton").addEventListener("click", async () => {
   const item = await dbGet(STORE_OBSERVATIONS, state.currentObservationId);
   if (!item) return;
   item.location = { ...state.pendingLocation, addedAt: Date.now() };
-  await dbPut(STORE_OBSERVATIONS, item);
+  await dbPutObservation(item);
   $("#locationPicker").close();
   renderCaptureLocation(item);
-  await renderMap();
+  if (!views.map.classList.contains("hidden")) await renderMap();
 });
 
 bestScore.addEventListener("click", async () => {
@@ -1781,7 +2248,7 @@ $("#saveCaptureDateButton").addEventListener("click", async () => {
   if (!item) return;
   item.captureAt = timestamp;
   item.dateSource = "manuel";
-  await dbPut(STORE_OBSERVATIONS, item);
+  await dbPutObservation(item);
   if (item.speciesId) await recomputeSpecies(item.speciesId);
   $("#captureDate").textContent = formatDate(timestamp, true);
   $("#captureDateStatus").textContent = "Date enregistrée.";
@@ -1793,7 +2260,7 @@ $("#saveCaptureNoteButton").addEventListener("click", async () => {
   const item = await dbGet(STORE_OBSERVATIONS, state.currentObservationId);
   if (!item) return;
   item.note = $("#captureNote").value.trim();
-  await dbPut(STORE_OBSERVATIONS, item);
+  await dbPutObservation(item);
   $("#captureNoteStatus").textContent = "Note enregistrée.";
 });
 
@@ -1804,7 +2271,7 @@ $("#deleteObservationButton").addEventListener("click", async () => {
   if (!confirm("Supprimer définitivement cette observation et ses photos enregistrées dans Fleuretmoi ?")) return;
   const oldSpeciesId = item.speciesId || null;
   const returnTarget = state.captureReturn;
-  await dbDelete(STORE_OBSERVATIONS, item.id);
+  await dbDeleteObservation(item.id);
   if (oldSpeciesId) await recomputeSpecies(oldSpeciesId);
   state.currentObservationId = null;
   clearObjectUrls("detailObjectUrls");
@@ -1820,10 +2287,51 @@ $("#deleteObservationButton").addEventListener("click", async () => {
   }
 });
 
+async function loadHistoryThumbnail(media, observationId, renderToken) {
+  try {
+    const observation = await dbGet(STORE_OBSERVATIONS, observationId);
+    if (renderToken !== state.historyRenderToken || !media.isConnected) return;
+    const photo = observation?.photos?.find((entry) => entry?.blob instanceof Blob);
+    if (!photo?.blob) return;
+    const img = document.createElement("img");
+    img.src = blobUrl(photo.blob, "historyObjectUrls");
+    img.alt = "";
+    img.loading = "lazy";
+    img.decoding = "async";
+    media.replaceChildren(img);
+    media.classList.remove("historyMediaEmpty");
+  } catch (error) {
+    console.error("Miniature Historique impossible", error);
+  }
+}
+
+function observeHistoryThumbnail(media, observationId, renderToken) {
+  if (!state.historyThumbObserver) {
+    loadHistoryThumbnail(media, observationId, renderToken);
+    return;
+  }
+  media._fleuretmoiObservationId = observationId;
+  media._fleuretmoiRenderToken = renderToken;
+  state.historyThumbObserver.observe(media);
+}
+
 async function renderHistory() {
+  const renderToken = ++state.historyRenderToken;
+  const { rows, total } = await dbGetRecentObservationSummaries(state.historyVisibleCount);
+  if (renderToken !== state.historyRenderToken) return;
+
+  state.historyThumbObserver?.disconnect();
+  state.historyThumbObserver = typeof IntersectionObserver === "function"
+    ? new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        state.historyThumbObserver?.unobserve(entry.target);
+        loadHistoryThumbnail(entry.target, entry.target._fleuretmoiObservationId, entry.target._fleuretmoiRenderToken);
+      }
+    }, { rootMargin: "220px 0px" })
+    : null;
+
   clearObjectUrls("historyObjectUrls");
-  const allRows = (await dbGetAll(STORE_OBSERVATIONS)).sort((a, b) => (b.captureAt || b.createdAt) - (a.captureAt || a.createdAt));
-  const rows = allRows.slice(0, state.historyVisibleCount);
   historyList.innerHTML = "";
   historyList.classList.toggle("emptyState", rows.length === 0);
   if (!rows.length) {
@@ -1839,15 +2347,8 @@ async function renderHistory() {
     row.setAttribute("aria-label", `Ouvrir l’observation ${item.commonName || item.scientificName || ""}`);
 
     const media = document.createElement("div");
-    media.className = "historyMedia";
-    const photo = item.photos?.[0];
-    if (photo?.blob) {
-      const img = document.createElement("img");
-      img.src = blobUrl(photo.blob, "historyObjectUrls");
-      img.alt = "";
-      img.loading = "lazy";
-      media.appendChild(img);
-    } else media.classList.add("historyMediaEmpty");
+    media.className = "historyMedia historyMediaEmpty";
+    if (item.photoCount > 0) observeHistoryThumbnail(media, item.id, renderToken);
 
     const content = document.createElement("div");
     content.className = "historyContent";
@@ -1866,8 +2367,7 @@ async function renderHistory() {
       status.innerHTML = checkSvg();
       status.setAttribute("aria-label", "Vérifiée");
     } else {
-      const { selection, candidate } = getSelectedCandidateInfo(item);
-      status.textContent = selection.type === "manual" ? "MAN" : `${Math.round(Number(candidate?.score || item.score || 0) * 100)}%`;
+      status.textContent = item.selectionType === "manual" ? "MAN" : `${Math.round(Number(item.score || 0) * 100)}%`;
       status.setAttribute("aria-label", "Non vérifiée");
     }
 
@@ -1877,9 +2377,9 @@ async function renderHistory() {
   });
 
   const loadMore = $("#loadMoreHistoryButton");
-  loadMore.classList.toggle("hidden", allRows.length <= state.historyVisibleCount);
-  loadMore.textContent = allRows.length > state.historyVisibleCount
-    ? `Afficher plus (${allRows.length - state.historyVisibleCount} restantes)`
+  loadMore.classList.toggle("hidden", total <= state.historyVisibleCount);
+  loadMore.textContent = total > state.historyVisibleCount
+    ? `Afficher plus (${total - state.historyVisibleCount} restantes)`
     : "Afficher plus";
 }
 
@@ -1995,30 +2495,36 @@ async function processQueue() {
   await refreshAllLists();
 }
 
-async function getSpeciesObservations(speciesOrId) {
-  const speciesId = typeof speciesOrId === "object" ? speciesOrId?.id : speciesOrId;
-  if (!speciesId) return [];
-  return (await dbGetAllByIndex(STORE_OBSERVATIONS, "speciesId", speciesId))
-    .filter((observation) => observation.verified && observation.speciesId === speciesId)
-    .sort((a, b) => (b.captureAt || b.createdAt) - (a.captureAt || a.createdAt));
-}
-
-function groupObservationsBySpecies(observations) {
-  const groups = new Map();
-  observations.forEach((observation) => {
-    if (!observation.verified || !observation.speciesId) return;
-    if (!groups.has(observation.speciesId)) groups.set(observation.speciesId, []);
-    groups.get(observation.speciesId).push(observation);
-  });
-  groups.forEach((rows) => rows.sort((a, b) => (b.captureAt || b.createdAt) - (a.captureAt || a.createdAt)));
-  return groups;
+async function loadHerbariumThumbnails(thumbs, observationIds, renderToken) {
+  try {
+    const blobs = [];
+    for (const observationId of observationIds || []) {
+      if (blobs.length >= 3 || renderToken !== state.herbariumRenderToken || !thumbs.isConnected) break;
+      const observation = await dbGet(STORE_OBSERVATIONS, observationId);
+      for (const photo of observation?.photos || []) {
+        if (photo?.blob instanceof Blob) blobs.push(photo.blob);
+        if (blobs.length >= 3) break;
+      }
+    }
+    if (!blobs.length || renderToken !== state.herbariumRenderToken || !thumbs.isConnected) return;
+    thumbs.replaceChildren();
+    blobs.forEach((blob) => {
+      const img = document.createElement("img");
+      img.className = "speciesThumb";
+      img.src = blobUrl(blob, "herbariumObjectUrls");
+      img.alt = "";
+      img.loading = "lazy";
+      img.decoding = "async";
+      thumbs.appendChild(img);
+    });
+  } catch (error) {
+    console.error("Miniatures Herbier impossibles", error);
+  }
 }
 
 async function renderHerbarium() {
-  clearObjectUrls("herbariumObjectUrls");
+  const renderToken = ++state.herbariumRenderToken;
   const allSpecies = await dbGetAll(STORE_SPECIES);
-  const allObservations = await dbGetAll(STORE_OBSERVATIONS);
-  const observationsBySpecies = groupObservationsBySpecies(allObservations);
   let speciesRows = [...allSpecies];
   const query = $("#herbariumSearch").value.trim().toLocaleLowerCase("fr");
   const sort = state.herbariumSort;
@@ -2035,9 +2541,12 @@ async function renderHerbarium() {
 
   $("#speciesCount").textContent = `${allSpecies.length} espèce${allSpecies.length > 1 ? "s" : ""}`;
   const list = $("#herbariumList");
-  list.innerHTML = "";
 
   if (!speciesRows.length) {
+    if (renderToken !== state.herbariumRenderToken) return;
+    state.herbariumThumbObserver?.disconnect();
+    clearObjectUrls("herbariumObjectUrls");
+    list.innerHTML = "";
     const empty = document.createElement("div");
     empty.className = "card herbariumEmpty";
     empty.textContent = query ? "Aucune espèce ne correspond à cette recherche." : "Votre herbier est vide. Confirmez une première identification pour y ajouter une espèce.";
@@ -2045,8 +2554,25 @@ async function renderHerbarium() {
     return;
   }
 
+  const { legacy, data: cardData } = await dbGetSpeciesCardSummaryData(speciesRows.map((species) => species.id), 3);
+  if (renderToken !== state.herbariumRenderToken) return;
+
+  state.herbariumThumbObserver?.disconnect();
+  state.herbariumThumbObserver = !legacy && typeof IntersectionObserver === "function"
+    ? new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        state.herbariumThumbObserver?.unobserve(entry.target);
+        loadHerbariumThumbnails(entry.target, entry.target._fleuretmoiObservationIds, entry.target._fleuretmoiRenderToken);
+      }
+    }, { rootMargin: "320px 0px" })
+    : null;
+
+  clearObjectUrls("herbariumObjectUrls");
+  list.innerHTML = "";
+
   for (const species of speciesRows) {
-    const observations = observationsBySpecies.get(species.id) || [];
+    const data = cardData.get(species.id) || { count: 0, photoBlobs: [], photoObservationIds: [] };
     const card = document.createElement("article");
     card.className = "card speciesEntry";
     const button = document.createElement("button");
@@ -2059,21 +2585,28 @@ async function renderHerbarium() {
     inner.className = "speciesCard";
     const thumbs = document.createElement("div");
     thumbs.className = "speciesThumbs";
-    const photoBlobs = observations.flatMap((obs) => (obs.photos || []).map((p) => p.blob).filter(Boolean)).slice(0, 3);
-    if (photoBlobs.length) {
-      photoBlobs.forEach((blob) => {
+
+    const placeholder = document.createElement("div");
+    placeholder.className = "speciesThumbPlaceholder";
+    placeholder.textContent = "Flore";
+    thumbs.appendChild(placeholder);
+
+    if (legacy && data.photoBlobs?.length) {
+      thumbs.replaceChildren();
+      data.photoBlobs.forEach((blob) => {
         const img = document.createElement("img");
         img.className = "speciesThumb";
         img.src = blobUrl(blob, "herbariumObjectUrls");
         img.alt = "";
         img.loading = "lazy";
+        img.decoding = "async";
         thumbs.appendChild(img);
       });
-    } else {
-      const placeholder = document.createElement("div");
-      placeholder.className = "speciesThumbPlaceholder";
-      placeholder.textContent = "Flore";
-      thumbs.appendChild(placeholder);
+    } else if (data.photoObservationIds?.length) {
+      thumbs._fleuretmoiObservationIds = data.photoObservationIds;
+      thumbs._fleuretmoiRenderToken = renderToken;
+      if (state.herbariumThumbObserver) state.herbariumThumbObserver.observe(thumbs);
+      else loadHerbariumThumbnails(thumbs, data.photoObservationIds, renderToken);
     }
 
     const text = document.createElement("div");
@@ -2084,8 +2617,8 @@ async function renderHerbarium() {
     scientific.textContent = species.scientificNameWithoutAuthor || species.scientificName;
     const meta = document.createElement("div");
     meta.className = "speciesCardMeta";
-    const last = observations[0]?.captureAt || species.lastSeenAt;
-    meta.textContent = `${observations.length} observation${observations.length > 1 ? "s" : ""} · dernière capture ${formatDate(last)}`;
+    const last = species.lastSeenAt;
+    meta.textContent = `${data.count} observation${data.count > 1 ? "s" : ""} · dernière capture ${formatDate(last)}`;
     text.append(title, scientific, meta);
     inner.append(thumbs, text);
     button.appendChild(inner);
@@ -2094,7 +2627,13 @@ async function renderHerbarium() {
   }
 }
 
-$("#herbariumSearch").addEventListener("input", renderHerbarium);
+$("#herbariumSearch").addEventListener("input", () => {
+  if (state.herbariumSearchTimer) clearTimeout(state.herbariumSearchTimer);
+  state.herbariumSearchTimer = setTimeout(() => {
+    state.herbariumSearchTimer = null;
+    renderHerbarium().catch((error) => console.error("Recherche Herbier impossible", error));
+  }, 250);
+});
 
 const herbariumSortButton = $("#herbariumSortButton");
 const herbariumSortMenu = $("#herbariumSortMenu");
@@ -2176,9 +2715,15 @@ async function openSpecies(id, { historyMode = "push" } = {}) {
   }
 
   state.currentSpeciesId = id;
+  state.historyRenderToken += 1;
+  state.historyThumbObserver?.disconnect();
+  state.mapRenderToken += 1;
   await renderSpecies(species);
+  if (state.currentSpeciesId !== id) return false;
   await decodeImagesIn(views.species);
   await switchToView(views.species, { hideNavigation: true, scrollY: 0 });
+  clearObjectUrls("historyObjectUrls");
+  clearObjectUrls("mapObjectUrls");
   recordRoute({ type: "species", id }, historyMode);
   // Optional network enrichment happens after the transition so opening a
   // species remains immediate even if Wikidata is slow or unavailable.
@@ -2201,9 +2746,105 @@ $("#backSpeciesButton").addEventListener("click", async () => {
   await showMainView("herbarium", { historyMode: "replace" });
 });
 
+async function hydrateSpeciesObservationPhotos(photos, summary, speciesId, renderToken) {
+  try {
+    const observation = await dbGet(STORE_OBSERVATIONS, summary.id);
+    if (renderToken !== state.speciesRenderToken || state.currentSpeciesId !== speciesId || !photos.isConnected) return;
+    photos.replaceChildren();
+    (observation?.photos || []).forEach((photo, photoIndex) => {
+      if (!(photo?.blob instanceof Blob)) return;
+      const card = document.createElement("div");
+      card.className = "observationPhotoCard";
+      const openPhoto = document.createElement("button");
+      openPhoto.type = "button";
+      openPhoto.className = "observationPhotoOpen";
+      openPhoto.setAttribute("aria-label", `Afficher en grand la capture du ${formatDate(summary.captureAt || summary.createdAt)}`);
+      const img = document.createElement("img");
+      img.src = blobUrl(photo.blob, "speciesObjectUrls");
+      img.alt = `Capture du ${formatDate(summary.captureAt || summary.createdAt)}`;
+      img.loading = "lazy";
+      img.decoding = "async";
+      openPhoto.appendChild(img);
+      openPhoto.addEventListener("click", () => openSpeciesPhotoViewer(summary.id, photoIndex, speciesId, photo.blob));
+      card.appendChild(openPhoto);
+      photos.appendChild(card);
+    });
+  } catch (error) {
+    console.error("Chargement des captures d’espèce impossible", error);
+  }
+}
+
+function renderSpeciesObservationBatch(speciesId, startIndex, endIndex, renderToken) {
+  const list = $("#speciesPhotoList");
+  const rows = state.speciesObservationSummaries.slice(startIndex, endIndex);
+  for (const summary of rows) {
+    const block = document.createElement("article");
+    block.className = "speciesObservation";
+    const head = document.createElement("div");
+    head.className = "observationHeader";
+    const date = document.createElement("span");
+    date.className = "observationDate";
+    date.textContent = formatDate(summary.captureAt || summary.createdAt, true);
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "openObservationButton";
+    open.textContent = "Voir l’observation";
+    open.addEventListener("click", () => openCapture(summary.id, { type: "species", value: speciesId }));
+    head.append(date, open);
+
+    const photos = document.createElement("div");
+    photos.className = "observationPhotos";
+    if (summary.photoCount > 0) {
+      photos._fleuretmoiSummary = summary;
+      photos._fleuretmoiSpeciesId = speciesId;
+      photos._fleuretmoiRenderToken = renderToken;
+      if (state.speciesThumbObserver) state.speciesThumbObserver.observe(photos);
+      else hydrateSpeciesObservationPhotos(photos, summary, speciesId, renderToken);
+    }
+
+    block.append(head, photos);
+    if (summary.note) {
+      const observationNote = document.createElement("p");
+      observationNote.className = "observationNote";
+      observationNote.textContent = summary.note;
+      block.appendChild(observationNote);
+    }
+    list.appendChild(block);
+  }
+}
+
+function updateSpeciesLoadMoreButton() {
+  const button = $("#loadMoreSpeciesObservationsButton");
+  if (!button) return;
+  const total = state.speciesObservationSummaries.length;
+  const remaining = Math.max(0, total - state.speciesVisibleCount);
+  button.classList.toggle("hidden", remaining === 0);
+  button.textContent = remaining > 0 ? `Afficher les suivantes (${remaining})` : "Afficher les suivantes";
+}
+
 async function renderSpecies(species) {
+  const renderToken = ++state.speciesRenderToken;
   clearObjectUrls("speciesObjectUrls");
-  const observations = await getSpeciesObservations(species);
+  state.speciesThumbObserver?.disconnect();
+  state.speciesThumbObserver = typeof IntersectionObserver === "function"
+    ? new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        state.speciesThumbObserver?.unobserve(entry.target);
+        hydrateSpeciesObservationPhotos(
+          entry.target,
+          entry.target._fleuretmoiSummary,
+          entry.target._fleuretmoiSpeciesId,
+          entry.target._fleuretmoiRenderToken,
+        );
+      }
+    }, { rootMargin: "360px 0px" })
+    : null;
+
+  state.speciesObservationSummaries = await getSpeciesObservationSummaries(species.id);
+  if (renderToken !== state.speciesRenderToken) return;
+  state.speciesVisibleCount = Math.min(SPECIES_OBSERVATION_BATCH_SIZE, state.speciesObservationSummaries.length);
+
   $("#speciesCommonName").textContent = species.commonName || species.scientificNameWithoutAuthor;
   const scientific = $("#speciesScientificName");
   scientific.textContent = species.scientificNameWithoutAuthor || species.scientificName;
@@ -2220,54 +2861,12 @@ async function renderSpecies(species) {
 
   const list = $("#speciesPhotoList");
   list.innerHTML = "";
-  observations.forEach((observation) => {
-    const block = document.createElement("article");
-    block.className = "speciesObservation";
-    const head = document.createElement("div");
-    head.className = "observationHeader";
-    const date = document.createElement("span");
-    date.className = "observationDate";
-    date.textContent = formatDate(observation.captureAt || observation.createdAt, true);
-    const open = document.createElement("button");
-    open.type = "button";
-    open.className = "openObservationButton";
-    open.textContent = "Voir l’observation";
-    open.addEventListener("click", () => openCapture(observation.id, { type: "species", value: species.id }));
-    head.append(date, open);
-
-    const photos = document.createElement("div");
-    photos.className = "observationPhotos";
-    (observation.photos || []).forEach((photo, photoIndex) => {
-      if (!photo.blob) return;
-      const card = document.createElement("div");
-      card.className = "observationPhotoCard";
-      const openPhoto = document.createElement("button");
-      openPhoto.type = "button";
-      openPhoto.className = "observationPhotoOpen";
-      openPhoto.setAttribute("aria-label", `Afficher en grand la capture du ${formatDate(observation.captureAt || observation.createdAt)}`);
-      const img = document.createElement("img");
-      img.src = blobUrl(photo.blob, "speciesObjectUrls");
-      img.alt = `Capture du ${formatDate(observation.captureAt || observation.createdAt)}`;
-      openPhoto.appendChild(img);
-      openPhoto.addEventListener("click", () => openSpeciesPhotoViewer(observation.id, photoIndex, species.id, photo.blob));
-      card.appendChild(openPhoto);
-      photos.appendChild(card);
-    });
-    block.append(head, photos);
-    if (observation.note) {
-      const observationNote = document.createElement("p");
-      observationNote.className = "observationNote";
-      observationNote.textContent = observation.note;
-      block.appendChild(observationNote);
-    }
-    list.appendChild(block);
-  });
+  renderSpeciesObservationBatch(species.id, 0, state.speciesVisibleCount, renderToken);
+  updateSpeciesLoadMoreButton();
 
   $("#speciesNote").value = species.note || "";
   $("#speciesNoteStatus").textContent = "";
   if (window.FleuretmoiIllustrations?.renderSpeciesIllustration) {
-    // L’illustration est décorative : une erreur dans ce module ne doit jamais
-    // empêcher l’ouverture de la fiche d’espèce elle-même.
     try {
       await window.FleuretmoiIllustrations.renderSpeciesIllustration(species);
     } catch (error) {
@@ -2279,6 +2878,16 @@ async function renderSpecies(species) {
     }
   }
 }
+
+$("#loadMoreSpeciesObservationsButton")?.addEventListener("click", () => {
+  if (!state.currentSpeciesId) return;
+  const start = state.speciesVisibleCount;
+  const end = Math.min(start + SPECIES_OBSERVATION_BATCH_SIZE, state.speciesObservationSummaries.length);
+  if (end <= start) return;
+  state.speciesVisibleCount = end;
+  renderSpeciesObservationBatch(state.currentSpeciesId, start, end, state.speciesRenderToken);
+  updateSpeciesLoadMoreButton();
+});
 
 $("#saveSpeciesNoteButton").addEventListener("click", async () => {
   if (!state.currentSpeciesId) return;
@@ -2299,7 +2908,49 @@ function initMap() {
   state.mapLayer = L.layerGroup().addTo(state.map);
 }
 
+function makeMapMarkerIcon(photoUrl = "") {
+  const markerHtml = photoUrl
+    ? `<div class="photoMarker"><img src="${photoUrl}" alt=""></div>`
+    : '<div class="photoMarker"></div>';
+  return L.divIcon({ className: "photoMarkerWrap", html: markerHtml, iconSize: [52, 52], iconAnchor: [26, 48] });
+}
+
+async function hydrateMapMarkerPhoto(task, renderToken) {
+  if (!task || task.photoLoaded || task.photoLoading) return;
+  task.photoLoading = true;
+  try {
+    const observation = await dbGet(STORE_OBSERVATIONS, task.observationId);
+    if (renderToken !== state.mapRenderToken || views.map.classList.contains("hidden")) return;
+    const photo = observation?.photos?.find((entry) => entry?.blob instanceof Blob);
+    task.photoLoaded = true;
+    if (!photo?.blob) return;
+    const photoUrl = blobUrl(photo.blob, "mapObjectUrls");
+    task.marker.setIcon(makeMapMarkerIcon(photoUrl));
+    if (!task.popup.querySelector(".mapPopupPhoto")) {
+      const img = document.createElement("img");
+      img.className = "mapPopupPhoto";
+      img.src = photoUrl;
+      img.alt = "";
+      task.popup.insertBefore(img, task.popup.firstChild);
+    }
+  } catch (error) {
+    console.error("Miniature de carte impossible", error);
+  } finally {
+    task.photoLoading = false;
+  }
+}
+
+async function preloadMapMarkerPhotos(tasks, renderToken) {
+  for (let offset = 0; offset < tasks.length; offset += 4) {
+    if (renderToken !== state.mapRenderToken || views.map.classList.contains("hidden")) return;
+    await waitForIdleTurn();
+    if (renderToken !== state.mapRenderToken || views.map.classList.contains("hidden")) return;
+    await Promise.all(tasks.slice(offset, offset + 4).map((task) => hydrateMapMarkerPhoto(task, renderToken)));
+  }
+}
+
 async function renderMap() {
+  const renderToken = ++state.mapRenderToken;
   clearObjectUrls("mapObjectUrls");
   const mapStatus = $("#mapStatus");
   if (!window.L) {
@@ -2308,33 +2959,29 @@ async function renderMap() {
   }
   initMap();
   state.mapLayer.clearLayers();
-  const allObservations = await dbGetAll(STORE_OBSERVATIONS);
-  const observations = allObservations.filter((obs) => Number.isFinite(obs.location?.latitude) && Number.isFinite(obs.location?.longitude));
+
+  const allObservations = await getAllObservationSummariesForLists();
+  if (renderToken !== state.mapRenderToken) return;
+  const observations = allObservations
+    .filter((obs) => Number.isFinite(obs.location?.latitude) && Number.isFinite(obs.location?.longitude))
+    .sort((a, b) => (b.captureAt || b.createdAt) - (a.captureAt || a.createdAt));
   $("#mapCount").textContent = `${observations.length} capture${observations.length > 1 ? "s" : ""}`;
   const missing = allObservations.length - observations.length;
   mapStatus.textContent = missing > 0
     ? `${missing} observation${missing > 1 ? "s" : ""} sans position ne ${missing > 1 ? "sont" : "est"} pas affichée${missing > 1 ? "s" : ""}.`
-    : observations.length ? "Touchez une photo sur la carte pour ouvrir la capture correspondante." : "Aucune observation géolocalisée pour le moment.";
+    : observations.length ? "Touchez un repère sur la carte pour ouvrir la capture correspondante." : "Aucune observation géolocalisée pour le moment.";
 
   const bounds = [];
+  const photoTasks = [];
   for (const observation of observations) {
-    const firstPhoto = observation.photos?.find((p) => p.blob);
-    const photoUrl = firstPhoto?.blob ? blobUrl(firstPhoto.blob, "mapObjectUrls") : "";
-    const markerHtml = photoUrl
-      ? `<div class="photoMarker"><img src="${photoUrl}" alt=""></div>`
-      : `<div class="photoMarker"></div>`;
-    const icon = L.divIcon({ className: "photoMarkerWrap", html: markerHtml, iconSize: [52, 52], iconAnchor: [26, 48] });
-    const marker = L.marker([observation.location.latitude, observation.location.longitude], { icon }).addTo(state.mapLayer);
+    const marker = L.marker(
+      [observation.location.latitude, observation.location.longitude],
+      { icon: makeMapMarkerIcon() },
+    ).addTo(state.mapLayer);
     bounds.push([observation.location.latitude, observation.location.longitude]);
 
     const popup = document.createElement("div");
     popup.className = "mapPopup";
-    if (photoUrl) {
-      const img = document.createElement("img");
-      img.src = photoUrl;
-      img.alt = "";
-      popup.appendChild(img);
-    }
     const common = document.createElement("strong");
     common.textContent = observation.commonName || "Observation";
     const sci = document.createElement("em");
@@ -2352,10 +2999,21 @@ async function renderMap() {
     });
     popup.append(common, sci, date, button);
     marker.bindPopup(popup);
+
+    if (observation.photoCount > 0) {
+      const task = { observationId: observation.id, marker, popup, photoLoaded: false, photoLoading: false };
+      marker.on("popupopen", () => hydrateMapMarkerPhoto(task, renderToken));
+      photoTasks.push(task);
+    }
   }
 
   if (bounds.length === 1) state.map.setView(bounds[0], 14);
   else if (bounds.length > 1) state.map.fitBounds(bounds, { padding: [35, 35], maxZoom: 15 });
+
+  // The map itself is ready before any photo record is opened. Recent marker
+  // photos then fill in during idle time; on very large maps the remaining
+  // markers load their photo only when the user opens their popup.
+  preloadMapMarkerPhotos(photoTasks.slice(0, MAP_PRELOAD_PHOTO_LIMIT), renderToken);
 }
 
 // ----- Agrandissement des captures dans l’Herbier -----
@@ -2624,13 +3282,12 @@ $("#saveEditorButton").addEventListener("click", async () => {
       storedPhoto.type = file.type;
       storedPhoto.editedAt = Date.now();
       storedPhoto.cropAspect = editorCanvas.width / editorCanvas.height;
-      await dbPut(STORE_OBSERVATIONS, observation);
+      await dbPutObservation(observation);
     }
     closeEditor();
     const species = await dbGet(STORE_SPECIES, editorState.speciesId);
     if (species) await renderSpecies(species);
-    await renderHistory();
-    await renderMap();
+    await refreshAllLists();
   }
 });
 
@@ -2743,8 +3400,8 @@ function prepareSwipePreview(gesture) {
   target.classList.add("swipePreview", `swipePreview${gesture.side[0].toUpperCase()}${gesture.side.slice(1)}`);
   target.style.pointerEvents = "none";
 
-  // The Herbier is already kept fresh by refreshAllLists(). Refresh again in
-  // the background, but never delay the gesture waiting for database work.
+  // Prepare the destination without delaying the gesture itself. Hidden main
+  // views are otherwise refreshed only when they are actually opened.
   if (gesture.target === "herbarium") {
     renderHerbarium().catch(console.error);
   }
@@ -2821,6 +3478,8 @@ function animateSwipeTo(gesture, completed) {
         setTimeout(() => state.map?.invalidateSize(), 30);
       } else if (targetName === "herbarium") {
         await renderHerbarium();
+      } else if (targetName === "camera") {
+        await Promise.all([renderQueue(), renderHistory()]);
       }
 
       recordRoute({ type: "main", value: targetName }, "push");
@@ -2995,19 +3654,26 @@ async function exportBackup() {
 
 async function replaceDatabaseFromBackup(backup) {
   const db = await openDb();
-  const tx = db.transaction([STORE_OBSERVATIONS, STORE_SPECIES, STORE_QUEUE, STORE_HISTORY], "readwrite");
+  const tx = db.transaction([STORE_OBSERVATIONS, STORE_OBSERVATION_SUMMARIES, STORE_SPECIES, STORE_QUEUE, STORE_HISTORY], "readwrite");
   const observationsStore = tx.objectStore(STORE_OBSERVATIONS);
+  const summariesStore = tx.objectStore(STORE_OBSERVATION_SUMMARIES);
   const speciesStore = tx.objectStore(STORE_SPECIES);
   const queueStore = tx.objectStore(STORE_QUEUE);
   const historyStore = tx.objectStore(STORE_HISTORY);
   observationsStore.clear();
+  summariesStore.clear();
   speciesStore.clear();
   queueStore.clear();
   historyStore.clear();
   (backup.species || []).forEach((row) => speciesStore.put(row));
-  (backup.observations || []).forEach((row) => observationsStore.put(row));
+  (backup.observations || []).forEach((row) => {
+    observationsStore.put(row);
+    const summary = makeObservationSummary(row);
+    if (summary) summariesStore.put(summary);
+  });
   (backup.queue || []).forEach((row) => queueStore.put(row));
   await transactionDone(tx);
+  state.summaryIndexReady = true;
 }
 
 $("#exportBackupButton").addEventListener("click", exportBackup);
@@ -3035,6 +3701,7 @@ $("#importBackupInput").addEventListener("change", async (event) => {
     await replaceDatabaseFromBackup(decoded);
     state.historyVisibleCount = 60;
     await syncVerifiedSpecies();
+    localStorage.setItem(DATA_INTEGRITY_STORAGE_KEY, DATA_INTEGRITY_VERSION);
     await refreshAllLists();
     backupStatus.textContent = "Sauvegarde importée avec succès.";
   } catch (error) {
@@ -3046,9 +3713,11 @@ $("#importBackupInput").addEventListener("change", async (event) => {
 $("#clearHistoryButton").addEventListener("click", async () => {
   if (!confirm("Effacer toutes les observations, les espèces de l’Herbier et les éléments en attente hors connexion sur cet appareil ?")) return;
   await dbClear(STORE_OBSERVATIONS);
+  await dbClear(STORE_OBSERVATION_SUMMARIES);
   await dbClear(STORE_SPECIES);
   await dbClear(STORE_QUEUE);
   await dbClear(STORE_HISTORY);
+  state.summaryIndexReady = true;
   state.historyVisibleCount = 60;
   await refreshAllLists();
 });
@@ -3104,10 +3773,11 @@ window.addEventListener("online", async () => {
 window.addEventListener("offline", setConnectionUi);
 
 async function refreshAllLists() {
-  await renderQueue();
-  await renderHistory();
-  await renderHerbarium();
-  if (state.map) await renderMap();
+  if (!views.camera.classList.contains("hidden")) {
+    await Promise.all([renderQueue(), renderHistory()]);
+  }
+  if (!views.herbarium.classList.contains("hidden")) await renderHerbarium();
+  if (!views.map.classList.contains("hidden")) await renderMap();
 }
 
 function closeDialogFromBackdrop(dialog, closeHandler = null) {
@@ -3127,11 +3797,22 @@ async function init() {
   setConnectionUi();
   renderApiKeyState();
   await openDb();
-  await syncVerifiedSpecies();
-  await refreshAllLists();
-  if (navigator.onLine) await processQueue();
+  await checkSummaryIndexReady({ force: true });
   state.navDepth = 0;
   await showMainView("camera", { historyMode: "replace" });
+
+  // Keep the compatibility repair and the v4 summary migration off the
+  // critical startup path. Existing data remains readable through the legacy
+  // fallback until all lightweight summaries have been created.
+  runMaintenanceWhenIdle(async () => {
+    if (navigator.onLine) await processQueue();
+    // Build the lightweight index before an eventual legacy integrity repair,
+    // so even that one-time repair can recompute species without reopening all
+    // of their photo blobs.
+    const summariesMigrated = await migrateObservationSummariesInBatches();
+    const repaired = await ensureDataIntegrityOnce();
+    if (repaired || summariesMigrated) await refreshAllLists();
+  });
 }
 
 if ("serviceWorker" in navigator) {
